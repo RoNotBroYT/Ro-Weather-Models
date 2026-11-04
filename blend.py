@@ -253,6 +253,42 @@ def safe(fetch, run, s):
         return None
 
 
+# Rain and cloud are not averaged plainly: an average spreads light rain and
+# half cloud over every place any one model had it, and loses the downpours.
+# The blend keeps WHERE the average puts them but takes HOW MUCH from the
+# models' own values ("probability-matched mean"), done in 30 deg squares so
+# tropical showers and polar drizzle are matched separately.
+PM_VARS = ("rain", "cloud")
+PM_TILE = 120  # grid points = 30 deg
+
+
+def matched_blend(mean, parts):
+    out = mean.copy()
+    # Which models cover each point (ICON-EU only covers Europe).
+    key = np.zeros(mean.shape, np.int16)
+    for k, (_, a) in enumerate(parts):
+        key |= np.isfinite(a).astype(np.int16) << k
+    for j0 in range(0, NLAT, PM_TILE):
+        for i0 in range(0, NLON, PM_TILE):
+            win = (slice(j0, j0 + PM_TILE), slice(i0, i0 + PM_TILE))
+            kt, mt = key[win], mean[win]
+            ot = out[win]
+            for g in np.unique(kt):
+                members = [(w, a[win][kt == g]) for k, (w, a) in enumerate(parts) if g >> k & 1]
+                if len(members) < 2:
+                    continue
+                sel = kt == g
+                wsum = sum(w for w, _ in members)
+                # The weighted average of the models' sorted values: their typical
+                # amounts, highest to lowest, placed onto the average's ranking.
+                target = sum(w * np.sort(v) for w, v in members) / wsum
+                order = np.argsort(mt[sel], kind="stable")
+                vals = np.empty_like(target)
+                vals[order] = target
+                ot[sel] = vals
+    return out
+
+
 def to_units(name, a, model):
     if name in ("temp", "dew"):
         return a - 273.15
@@ -292,6 +328,7 @@ def main(out_dir="out"):
         for li0, h in enumerate(leads):
             li = c0 + li0
             acc = {name: np.zeros((NLAT, NLON), np.float32) for name, _, _ in VARS}
+            parts = {name: [] for name in PM_VARS}  # each model's field, for the matched blend
             wsum = {name: np.zeros((NLAT, NLON), np.float32) for name, _, _ in VARS}
             for m, f in per_model.items():
                 off = offs[m]
@@ -309,11 +346,15 @@ def main(out_dir="out"):
                             continue
                         a = to_units(name, cur[name], m)
                     ok = np.isfinite(a)
+                    if name in PM_VARS:
+                        parts[name].append((WEIGHTS[m], a))
                     acc[name][ok] += WEIGHTS[m] * a[ok]
                     wsum[name][ok] += WEIGHTS[m]
             for name, scale, offset in VARS:
                 with np.errstate(invalid="ignore", divide="ignore"):
                     v = acc[name] / wsum[name]
+                if name in PM_VARS and len(parts[name]) > 1:
+                    v = matched_blend(v, parts[name])
                 v = np.where(wsum[name] > 0, (v - offset) * scale, -32768)
                 data[:, :, li, VI[name]] = np.clip(np.rint(v), -32768, 32767).astype(np.int16)
         del per_model
