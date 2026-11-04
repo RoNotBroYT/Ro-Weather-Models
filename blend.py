@@ -26,6 +26,8 @@ import urllib.request
 import eccodes
 import numpy as np
 
+import stations
+
 # ---- The grid, the hours and the fields ----
 
 NLAT, NLON = 721, 1440  # 90 .. -90, -180 .. 179.75
@@ -299,8 +301,31 @@ def to_units(name, a, model):
     return a
 
 
+STATION_VARS = ("temp", "dew", "wind", "gust", "cloud", "pressure")
+
+
+def at_station(fields, model, j, i):
+    """One model's values at a station's grid point (for the forecast log)."""
+    out = {}
+    for name in STATION_VARS:
+        if name == "wind":
+            if "u" in fields and "v" in fields:
+                out[name] = float(np.hypot(fields["u"][j, i], fields["v"][j, i]))
+            continue
+        if name in fields:
+            out[name] = float(to_units(name, fields[name][j:j + 1, i:i + 1], model)[0, 0])
+    return {k: round(v, 2) for k, v in out.items() if np.isfinite(v)}
+
+
 def main(out_dir="out"):
     os.makedirs(out_dir, exist_ok=True)
+    # Where the check stations are, so each model's forecast for them is logged.
+    try:
+        spots = {k: (int(round((90 - la) / 0.25)), int(round(((lo + 180) % 360) / 0.25)) % NLON) for k, (la, lo) in stations.positions().items()}
+    except Exception as e:  # noqa: BLE001
+        print("  no station list:", e, file=sys.stderr)
+        spots = {}
+    log = {k: {} for k in spots}
     runs = {"ecmwf": ecmwf_run(), "gfs": gfs_run(), "icon": icon_run()}
     base = runs["ecmwf"]  # hour 0 of the blend = the ECMWF run time
     print("runs:", {k: v and v.isoformat() for k, v in runs.items()})
@@ -325,6 +350,12 @@ def main(out_dir="out"):
             t0 = time.time()
             per_model[m] = fields_at(fetch, runs[m], hours, avail)
             print(f"  hours {leads[0]}-{leads[-1]} {m}: {len(per_model[m])} fields in {time.time() - t0:.0f} s", flush=True)
+        for h in leads:
+            for m, f in per_model.items():
+                cur = f.get(h - offs[m])
+                if cur:
+                    for k, (j, i) in spots.items():
+                        log[k].setdefault(str(h), {})[m] = at_station(cur, m, j, i)
         for li0, h in enumerate(leads):
             li = c0 + li0
             acc = {name: np.zeros((NLAT, NLON), np.float32) for name, _, _ in VARS}
@@ -360,6 +391,18 @@ def main(out_dir="out"):
         del per_model
 
     data.tofile(os.path.join(out_dir, "blend.bin"))
+    # Our blend's own values at the stations, next to each model's.
+    for k, (j, i) in spots.items():
+        for li, h in enumerate(LEADS):
+            row = data[j, i, li]
+            if row[VI["temp"]] == -32768:
+                continue
+            val = lambda n: (row[VI[n]] / VARS[VI[n]][1]) + VARS[VI[n]][2]  # noqa: E731
+            b = {n: round(float(val(n)), 2) for n in ("temp", "dew", "gust", "cloud", "pressure")}
+            b["wind"] = round(float(np.hypot(val("u"), val("v"))), 2)
+            log[k].setdefault(str(h), {})["blend"] = b
+    with open(os.path.join(out_dir, "stations.json"), "w") as fh:
+        json.dump({"run": base.strftime("%Y-%m-%dT%H:00Z"), "stations": log}, fh, separators=(",", ":"))
     meta = {
         "run": base.strftime("%Y-%m-%dT%H:00Z"),
         "made": dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%MZ"),
