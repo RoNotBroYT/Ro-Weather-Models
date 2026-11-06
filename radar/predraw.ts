@@ -104,7 +104,7 @@ try {
   for (const [z, x0, x1, y0, y1] of [[2, 0, 3, 0, 3], [3, 3, 4, 1, 2], [4, 7, 8, 4, 5], [5, 15, 16, 9, 10], [6, 30, 32, 18, 21]] as const)
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) sq.push([z, x, y]);
   const satStart = Date.now();
-  let satSaved = 0;
+  let satSaved = 0, viaCira = 0;
   for (const f of frames) {
     if (Date.now() - satStart > 240_000) break;
     const parts: Partial<Record<ViewSat, string>> = {};
@@ -116,13 +116,13 @@ try {
     await pool(sq.map(([z, x, y]) => async () => {
       const size = (2 * MAX) / 2 ** z, x0 = -MAX + x * size, y1 = MAX - y * size;
       const buf = await renderView({ x0, y0: y1 - size, x1: x0 + size, y1, w: 512, h: 512, parts });
-      if (parts.mtg && eumetsatSkipped()) { bad = true; return; } // Meteosat missing: let the site draw it later
+      if (parts.mtg && eumetsatSkipped()) viaCira++; // EUMETSAT unreachable: Meteosat came from the CIRA copy
       await put(`${g}/${z}/${x}/${y}.webp`, buf, buf.subarray(0, 4).toString("ascii") === "RIFF" ? "image/webp" : "image/jpeg");
       drawn++;
     }).map((j) => () => j().catch((e) => { bad = true; throw e; })), 6);
     if (!bad) { groups.add(g); satSaved++; }
   }
-  console.log(`satellite: ${satSaved} new frames saved`);
+  console.log(`satellite: ${satSaved} new frames saved${viaCira ? ` (${viaCira} squares used the CIRA copy of Meteosat)` : ""}`);
 } catch (e) {
   console.warn("satellite skipped:", String(e).slice(0, 200));
 }
