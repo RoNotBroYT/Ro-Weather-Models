@@ -13,7 +13,7 @@
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { historyTimes, latestOperaTime, opera, renderTile } from "./lib/server/radar24";
 import { renderNowcastTile, NOWCAST_MAX_LEAD_MIN } from "./lib/server/radarNowcast";
-import { eumetsatSkipped, renderView, VIEW_SATS, type ViewSat } from "./lib/server/satView";
+import { eumetsatSkipped, renderView, useMtgMosaics, VIEW_SATS, type ViewSat } from "./lib/server/satView";
 
 const s3 = new S3Client({
   region: "auto",
@@ -115,6 +115,14 @@ if (doing("sat")) try {
   for (const [z, x0, x1, y0, y1] of [...AREA, [7, 56, 65, 37, 44]] as const)
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) sq.push([z, x, y]);
   // Newest frames first get the close-ups; the whole loop fills over the next runs.
+  // Meteosat as three big pictures per scan (Europe, the UK and neighbours, Great
+  // Britain and Ireland close up), each fetched once and cut into every square.
+  const area = (z: number, x0: number, x1: number, y0: number, y1: number, pz: number) => {
+    const size = (2 * MAX) / 2 ** z;
+    const k = 2 ** (pz - z) * 512;
+    return { x0: -MAX + x0 * size, x1: -MAX + (x1 + 1) * size, y1: MAX - y0 * size, y0: MAX - (y1 + 1) * size, w: (x1 - x0 + 1) * k, h: (y1 - y0 + 1) * k };
+  };
+  useMtgMosaics([area(3, 2, 5, 0, 3, 4), area(5, 13, 18, 7, 12, 6), area(7, 56, 65, 37, 44, 7)]);
   const satStart = Date.now();
   let satSaved = 0, viaCira = 0;
   for (const f of frames) {

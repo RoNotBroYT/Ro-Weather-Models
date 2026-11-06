@@ -158,6 +158,27 @@ function visibleMask(q: ViewReq, sat: ViewSat): Uint8Array {
 // Meteosat-12: one WMS image for the whole area
 // ---------------------------------------------------------------------------
 
+// The GitHub drawing job draws hundreds of squares per picture; one EUMETSAT request
+// each was throttled to a crawl. It can instead name a few big areas: each is fetched
+// ONCE per scan time and every square inside one is cut from it.
+export interface MtgMosaic { x0: number; y0: number; x1: number; y1: number; w: number; h: number }
+let mosaics: MtgMosaic[] = [];
+const mosaicImgs = new Map<string, Promise<Awaited<ReturnType<typeof loadImage>> | null>>();
+export function useMtgMosaics(m: MtgMosaic[]) {
+  mosaics = m;
+}
+function mosaicFor(m: MtgMosaic, iso: string) {
+  const key = `${iso}|${m.x0},${m.y0},${m.x1},${m.y1},${m.w}`;
+  let p = mosaicImgs.get(key);
+  if (!p) {
+    const qs = new URLSearchParams({ service: "WMS", version: "1.3.0", request: "GetMap", layers: "mtg_fd:rgb_geocolour", styles: "", format: "image/jpeg", crs: "EPSG:3857", width: String(m.w), height: String(m.h), time: iso, bbox: `${m.x0},${m.y0},${m.x1},${m.y1}` });
+    p = eumetsat(() => fetchImage(`https://view.eumetsat.int/geoserver/wms?${qs.toString()}`));
+    mosaicImgs.set(key, p);
+    while (mosaicImgs.size > 8) mosaicImgs.delete(mosaicImgs.keys().next().value!);
+  }
+  return p;
+}
+
 async function mtgLayer(q: ViewReq, iso: string, cols: Cols): Promise<Layer> {
   const pxX = (q.x1 - q.x0) / q.w;
   // Only the columns MTG is needed for, clamped to the world's width (views
@@ -182,11 +203,24 @@ async function mtgLayer(q: ViewReq, iso: string, cols: Cols): Promise<Layer> {
     time: iso,
     bbox: `${cx0},${q.y0},${cx1},${q.y1}`,
   });
-  const img = await eumetsat(() => fetchImage(`https://view.eumetsat.int/geoserver/wms?${p.toString()}`));
-  if (!img) return null;
+  // A big area fetched once that holds this one, at least as sharp: cut from it.
+  const pxY = (q.y1 - q.y0) / q.h;
+  const m = mosaics
+    .filter((m) => m.x0 <= cx0 && m.x1 >= cx1 && m.y0 <= q.y0 && m.y1 >= q.y1 && (m.x1 - m.x0) / m.w <= pxX * 1.05 && (m.y1 - m.y0) / m.h <= pxY * 1.05)
+    .sort((a, b) => (b.x1 - b.x0) / b.w - (a.x1 - a.x0) / a.w)[0]; // the coarsest that is sharp enough
   const c = createCanvas(q.w, q.h);
   const ctx = c.getContext("2d");
-  ctx.drawImage(img, c0, 0, width, q.h);
+  if (m) {
+    const big = await mosaicFor(m, iso);
+    if (!big) return null;
+    const sx = ((cx0 - m.x0) / (m.x1 - m.x0)) * m.w, sw = ((cx1 - cx0) / (m.x1 - m.x0)) * m.w;
+    const sy = ((m.y1 - q.y1) / (m.y1 - m.y0)) * m.h, sh = ((q.y1 - q.y0) / (m.y1 - m.y0)) * m.h;
+    ctx.drawImage(big, sx, sy, sw, sh, c0, 0, width, q.h);
+  } else {
+    const img = await eumetsat(() => fetchImage(`https://view.eumetsat.int/geoserver/wms?${p.toString()}`));
+    if (!img) return null;
+    ctx.drawImage(img, c0, 0, width, q.h);
+  }
   const d = ctx.getImageData(0, 0, q.w, q.h).data;
   // JPEG has no transparency: take "can MTG see this spot" from the geometry,
   // and treat pure black (EUMETSAT's no-data) as no picture.
