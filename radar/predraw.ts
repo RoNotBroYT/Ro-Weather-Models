@@ -110,13 +110,18 @@ try {
     const parts: Partial<Record<ViewSat, string>> = {};
     for (const [k, v] of Object.entries((f?.parts ?? {}) as Record<string, string | null>)) if (v && VIEW_SATS.includes(k as ViewSat)) parts[k as ViewSat] = v;
     const p = Object.entries(f?.parts ?? {}).filter(([, v]) => !!v).map(([k, v]) => `${k}~${v}`).join(",");
-    const g = `sat/${satKey(p)}`;
+    const g = `s2/${satKey(p)}`; // s2: the first sat/ set had some Europe-blank pictures
     if (!p || done.has(g)) continue;
     let bad = false;
     await pool(sq.map(([z, x, y]) => async () => {
       const size = (2 * MAX) / 2 ** z, x0 = -MAX + x * size, y1 = MAX - y * size;
       const buf = await renderView({ x0, y0: y1 - size, x1: x0 + size, y1, w: 512, h: 512, parts });
-      if (parts.mtg && eumetsatSkipped()) viaCira++; // EUMETSAT unreachable: Meteosat came from the CIRA copy
+      if (parts.mtg && eumetsatSkipped()) {
+        // EUMETSAT unreachable: Europe came from CIRA's copy, which runs 30–40 min late,
+        // so a newer picture would have Europe blank. Keep only older ones.
+        if (Date.now() - Date.parse(parts.mtg) < 75 * 60_000) { bad = true; return; }
+        viaCira++;
+      }
       await put(`${g}/${z}/${x}/${y}.webp`, buf, buf.subarray(0, 4).toString("ascii") === "RIFF" ? "image/webp" : "image/jpeg");
       drawn++;
     }).map((j) => () => j().catch((e) => { bad = true; throw e; })), 6);
@@ -130,7 +135,7 @@ try {
 // A frame counts as done only when every one of its pictures was saved; keep the last 2 days.
 const cutoff = Date.now() - 2 * 86_400_000;
 const all = [...new Set([...done, ...([...groups].filter((g) => !unfinished.has(g)))])];
-const keep = [...all.filter((g) => !g.startsWith("sat/") && Number(g.split("/")[1]) > cutoff), ...all.filter((g) => g.startsWith("sat/")).slice(-80)];
+const keep = [...all.filter((g) => !g.startsWith("s2/") && !g.startsWith("sat/") && Number(g.split("/")[1]) > cutoff), ...all.filter((g) => g.startsWith("s2/")).slice(-80)];
 const body = Buffer.from(JSON.stringify([...new Set(keep)]));
 if (local) await fs.writeFile("out/done.json", body);
 else await s3.send(new PutObjectCommand({ Bucket, Key: "done.json", Body: body, ContentType: "application/json", CacheControl: "no-store" }));
