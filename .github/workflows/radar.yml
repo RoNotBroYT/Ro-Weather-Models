@@ -1,0 +1,30 @@
+name: Radar
+
+# Draws the newest radar pictures into R2 (bucket ro-weather-radar), so the
+# website's paid server hardly draws radar. Started every 5 minutes by the
+# Cloudflare Worker "ro-weather-radar-warm" (GitHub's own timer runs late).
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: radar
+  cancel-in-progress: false
+
+jobs:
+  draw:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: radar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - name: Draw and upload
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ro-weather-radar
+        run: bun predraw.ts
