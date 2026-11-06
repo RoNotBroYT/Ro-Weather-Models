@@ -95,17 +95,23 @@ await pool(jobs);
 const MAX = 20037508.342789244;
 const satKey = (p: string) => p.replace(/[^A-Za-z0-9-]/g, "_");
 try {
-  const loop = await fetch("https://www.ro-weather.app/api/satellite-loop?src=world&hours=1", { signal: AbortSignal.timeout(20_000) }).then((r) => r.json());
-  const f = loop?.frames?.[loop.frames.length - 1];
-  const parts: Partial<Record<ViewSat, string>> = {};
-  for (const [k, v] of Object.entries((f?.parts ?? {}) as Record<string, string | null>)) if (v && VIEW_SATS.includes(k as ViewSat)) parts[k as ViewSat] = v;
-  const p = Object.entries(f?.parts ?? {}).filter(([, v]) => !!v).map(([k, v]) => `${k}~${v}`).join(",");
-  const g = `sat/${satKey(p)}`;
-  if (!p) console.log("satellite: no frame in the list");
-  if (p && !done.has(g)) {
-    const sq: [number, number, number][] = [];
-    for (const [z, x0, x1, y0, y1] of [[2, 0, 3, 0, 3], [3, 3, 4, 1, 2], [4, 7, 8, 4, 5], [5, 15, 16, 9, 10]] as const)
-      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) sq.push([z, x, y]);
+  // The whole 12 h loop the map loads (newest first); a frame already saved is skipped,
+  // so after the first fill each run draws only the new one. At most ~4 min per run.
+  const loop = await fetch("https://www.ro-weather.app/api/satellite-loop?src=world&hours=12", { signal: AbortSignal.timeout(20_000) }).then((r) => r.json());
+  const frames = [...(loop?.frames ?? [])].reverse();
+  if (!frames.length) console.log("satellite: no frames in the list");
+  const sq: [number, number, number][] = [];
+  for (const [z, x0, x1, y0, y1] of [[2, 0, 3, 0, 3], [3, 3, 4, 1, 2], [4, 7, 8, 4, 5], [5, 15, 16, 9, 10], [6, 30, 32, 18, 21]] as const)
+    for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) sq.push([z, x, y]);
+  const satStart = Date.now();
+  let satSaved = 0;
+  for (const f of frames) {
+    if (Date.now() - satStart > 240_000) break;
+    const parts: Partial<Record<ViewSat, string>> = {};
+    for (const [k, v] of Object.entries((f?.parts ?? {}) as Record<string, string | null>)) if (v && VIEW_SATS.includes(k as ViewSat)) parts[k as ViewSat] = v;
+    const p = Object.entries(f?.parts ?? {}).filter(([, v]) => !!v).map(([k, v]) => `${k}~${v}`).join(",");
+    const g = `sat/${satKey(p)}`;
+    if (!p || done.has(g)) continue;
     let bad = false;
     await pool(sq.map(([z, x, y]) => async () => {
       const size = (2 * MAX) / 2 ** z, x0 = -MAX + x * size, y1 = MAX - y * size;
@@ -113,10 +119,10 @@ try {
       if (parts.mtg && eumetsatSkipped()) { bad = true; return; } // Meteosat missing: let the site draw it later
       await put(`${g}/${z}/${x}/${y}.webp`, buf, buf.subarray(0, 4).toString("ascii") === "RIFF" ? "image/webp" : "image/jpeg");
       drawn++;
-    }), 6);
-    if (!bad) groups.add(g);
-    console.log(`satellite ${p}: ${bad ? "Meteosat unavailable, not kept" : "saved"}`);
+    }).map((j) => () => j().catch((e) => { bad = true; throw e; })), 6);
+    if (!bad) { groups.add(g); satSaved++; }
   }
+  console.log(`satellite: ${satSaved} new frames saved`);
 } catch (e) {
   console.warn("satellite skipped:", String(e).slice(0, 200));
 }
@@ -124,7 +130,7 @@ try {
 // A frame counts as done only when every one of its pictures was saved; keep the last 2 days.
 const cutoff = Date.now() - 2 * 86_400_000;
 const all = [...new Set([...done, ...([...groups].filter((g) => !unfinished.has(g)))])];
-const keep = [...all.filter((g) => !g.startsWith("sat/") && Number(g.split("/")[1]) > cutoff), ...all.filter((g) => g.startsWith("sat/")).slice(-40)];
+const keep = [...all.filter((g) => !g.startsWith("sat/") && Number(g.split("/")[1]) > cutoff), ...all.filter((g) => g.startsWith("sat/")).slice(-80)];
 const body = Buffer.from(JSON.stringify([...new Set(keep)]));
 if (local) await fs.writeFile("out/done.json", body);
 else await s3.send(new PutObjectCommand({ Bucket, Key: "done.json", Body: body, ContentType: "application/json", CacheControl: "no-store" }));
