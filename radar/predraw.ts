@@ -22,10 +22,17 @@ const s3 = new S3Client({
 });
 const Bucket = process.env.R2_BUCKET ?? "ro-weather-radar";
 const started = Date.now();
+// Which share of the work this machine does (the GitHub job runs them side by side):
+// "radar" = past frames, "forecast", "sat"; unset = all (a local test).
+const PART = process.env.PART ?? "all";
+const doing = (k: string) => PART === "all" || PART === k;
+const DONE = `done-${PART}.json`;
 
 // The squares people open: the UK at zoom 4–6, Europe at 3, the world at 2.
 const VIEW: [number, number, number][] = [];
-for (const [z, x0, x1, y0, y1] of [[2, 0, 3, 0, 3], [3, 3, 4, 1, 2], [4, 7, 8, 4, 5], [5, 15, 16, 9, 10], [6, 30, 32, 19, 21]] as const)
+// World at 2, Europe at 3–4, the UK and its neighbours at 5–6 (wider than any screen opens on).
+const AREA = [[2, 0, 3, 0, 3], [3, 2, 5, 0, 3], [4, 5, 10, 3, 7], [5, 13, 18, 7, 12], [6, 28, 34, 17, 23]] as const;
+for (const [z, x0, x1, y0, y1] of AREA)
   for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) VIEW.push([z, x, y]);
 
 // No R2 keys (a local test): write into ./out instead.
@@ -35,8 +42,8 @@ const fs = await import("fs/promises");
 // would be ~2 million reads a day, past the free allowance).
 const readDone = async (): Promise<string[]> => {
   try {
-    if (local) return JSON.parse(await fs.readFile("out/done.json", "utf8"));
-    const r = await s3.send(new GetObjectCommand({ Bucket, Key: "done.json" }));
+    if (local) return JSON.parse(await fs.readFile(`out/${DONE}`, "utf8"));
+    const r = await s3.send(new GetObjectCommand({ Bucket, Key: DONE }));
     return JSON.parse(await r.Body!.transformToString());
   } catch { return []; }
 };
@@ -69,12 +76,13 @@ const times = [...new Set([[2, 5], [6, 10], [12, 20], [24, 30]].flatMap(([h, st]
 // Never save a picture drawn without its European radar file (a failed download
 // would otherwise be saved as "finished" and stay wrong): skip that time, the site draws it.
 const ok = new Set<number>();
-await Promise.all(times.map(async (t) => { if (await opera(t).catch(() => null)) ok.add(t); }));
-if (!ok.has(latest)) { console.log("newest European radar file not readable: nothing saved"); process.exit(1); }
+const radarWork = doing("radar") || doing("forecast");
+if (radarWork) await Promise.all((doing("radar") ? times : [latest]).map(async (t) => { if (await opera(t).catch(() => null)) ok.add(t); }));
+if (radarWork && !ok.has(latest)) { console.log("newest European radar file not readable: nothing saved"); process.exit(1); }
 const jobs: (() => Promise<void>)[] = [];
 for (const t of times.filter((t) => ok.has(t)))
   for (const [z, x, y] of VIEW)
-    for (const s of [2, 1]) jobs.push(() => job(`tile/${t}/${z}/${x}/${y}${s === 2 ? "@2x" : ""}.webp`, () => renderTile(t, z, x, y, s)));
+    jobs.push(() => job(`tile/${t}/${z}/${x}/${y}@2x.webp`, () => renderTile(t, z, x, y, 2)));
 // The forecast, as the site's frame list makes it (UK and Europe only).
 const now = Date.now();
 const forecast: number[] = [];
@@ -84,24 +92,22 @@ for (let t = Math.ceil(now / 600_000) * 600_000; t <= now + 60 * 60_000 && t - l
 const fjobs: (() => Promise<void>)[] = [];
 for (const ft of forecast)
   for (const [z, x, y] of VIEW.filter(([z]) => z >= 4))
-    for (const s of [2, 1]) fjobs.push(() => job(`nowcast/${latest}/${ft}/${z}/${x}/${y}${s === 2 ? "@2x" : ""}.webp`, () => renderNowcastTile(latest, ft, z, x, y, s)));
+    fjobs.push(() => job(`nowcast/${latest}/${ft}/${z}/${x}/${y}@2x.webp`, () => renderNowcastTile(latest, ft, z, x, y, 2)));
 // Newest history frame and the forecast first (what people open), then the rest.
-const first = jobs.splice(0, VIEW.length * 2);
-await pool(first);
-await pool(fjobs);
-await pool(jobs);
+if (doing("radar")) await pool(jobs, 10); // newest first
+if (doing("forecast")) await pool(fjobs, 10);
 // Satellite: the newest picture's squares (world, Europe, UK), as the site's map asks
 // for them (components/satView.ts satTiles). Keyed by the scans used, so never stale.
 const MAX = 20037508.342789244;
 const satKey = (p: string) => p.replace(/[^A-Za-z0-9-]/g, "_");
-try {
+if (doing("sat")) try {
   // The whole 12 h loop the map loads (newest first); a frame already saved is skipped,
   // so after the first fill each run draws only the new one. At most ~4 min per run.
   const loop = await fetch("https://www.ro-weather.app/api/satellite-loop?src=world&hours=12", { signal: AbortSignal.timeout(20_000) }).then((r) => r.json());
   const frames = [...(loop?.frames ?? [])].reverse();
   if (!frames.length) console.log("satellite: no frames in the list");
   const sq: [number, number, number][] = [];
-  for (const [z, x0, x1, y0, y1] of [[2, 0, 3, 0, 3], [3, 3, 4, 1, 2], [4, 7, 8, 4, 5], [5, 15, 16, 9, 10], [6, 30, 32, 18, 21]] as const)
+  for (const [z, x0, x1, y0, y1] of AREA)
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) sq.push([z, x, y]);
   const satStart = Date.now();
   let satSaved = 0, viaCira = 0;
@@ -137,6 +143,6 @@ const cutoff = Date.now() - 2 * 86_400_000;
 const all = [...new Set([...done, ...([...groups].filter((g) => !unfinished.has(g)))])];
 const keep = [...all.filter((g) => !g.startsWith("s2/") && !g.startsWith("sat/") && Number(g.split("/")[1]) > cutoff), ...all.filter((g) => g.startsWith("s2/")).slice(-80)];
 const body = Buffer.from(JSON.stringify([...new Set(keep)]));
-if (local) await fs.writeFile("out/done.json", body);
-else await s3.send(new PutObjectCommand({ Bucket, Key: "done.json", Body: body, ContentType: "application/json", CacheControl: "no-store" }));
-console.log(`newest ${new Date(latest).toISOString()}: drew ${drawn}, already there ${skipped}, ${Math.round((Date.now() - started) / 1000)} s`);
+if (local) await fs.writeFile(`out/${DONE}`, body);
+else await s3.send(new PutObjectCommand({ Bucket, Key: DONE, Body: body, ContentType: "application/json", CacheControl: "no-store" }));
+console.log(`[${PART}] newest ${new Date(latest).toISOString()}: drew ${drawn}, already there ${skipped}, ${Math.round((Date.now() - started) / 1000)} s`);
