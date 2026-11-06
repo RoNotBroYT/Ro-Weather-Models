@@ -13,6 +13,7 @@
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { historyTimes, latestOperaTime, opera, renderTile } from "./lib/server/radar24";
 import { renderNowcastTile, NOWCAST_MAX_LEAD_MIN } from "./lib/server/radarNowcast";
+import { buildClutter } from "./clutter";
 import { eumetsatSkipped, renderView, useMtgMosaics, VIEW_SATS, type ViewSat } from "./lib/server/satView";
 
 const s3 = new S3Client({
@@ -97,6 +98,19 @@ for (const ft of forecast)
   for (const [z, x, y] of VIEW.filter(([z]) => z >= 4))
     fjobs.push(() => job(`nowcast/${latest}/${ft}/${z}/${x}/${y}@2x.webp`, () => renderNowcastTile(latest, ft, z, x, y, 2)));
 // Newest history frame and the forecast first (what people open), then the rest.
+// Once a day: rebuild the clutter list from the past day's frames (before drawing,
+// so today's pictures use it). See clutter.ts.
+if (doing("radar")) {
+  const age = local ? Infinity : await fetch("https://radar.ro-weather.app/clutter.bin", { method: "HEAD" }).then((r) => (r.ok ? Date.now() - Date.parse(r.headers.get("last-modified") ?? "0") : Infinity)).catch(() => Infinity);
+  if (age > 86_400_000) {
+    const list = await buildClutter([...ok]);
+    if (list) {
+      const body = Buffer.from(list.buffer);
+      if (local) await fs.writeFile("out/clutter.bin", body);
+      else await s3.send(new PutObjectCommand({ Bucket, Key: "clutter.bin", Body: body, ContentType: "application/octet-stream", CacheControl: "public, max-age=3600" }));
+    }
+  }
+}
 if (doing("radar")) await pool(jobs, 10); // newest first
 if (doing("forecast")) await pool(fjobs, 10);
 // Satellite: the newest picture's squares (world, Europe, UK), as the site's map asks

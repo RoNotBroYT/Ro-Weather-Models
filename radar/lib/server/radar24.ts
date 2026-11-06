@@ -211,6 +211,74 @@ async function limited<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Ground clutter (the speckle that sits on and around some radars, e.g. Dublin's:
+// buildings, hills, turbines, sea waves). Ro-Weather-Models' radar job builds a list
+// of OPERA cells that show "rain" in nearly every frame while the ring around them
+// is dry (radar/clutter.ts), and saves it to R2. Such a cell is blanked, UNLESS the
+// ring around it has rain now: then it is real weather passing over and is kept.
+// ---------------------------------------------------------------------------
+
+const CLUTTER_URL = "https://radar.ro-weather.app/clutter.bin";
+const cg = globalThis as { __rwClutter?: { at: number; p: Promise<Uint32Array | null> } };
+function clutterCells(): Promise<Uint32Array | null> {
+  if (process.env.RW_NO_CLUTTER === "1") return Promise.resolve(null);
+  if (!cg.__rwClutter || Date.now() - cg.__rwClutter.at > 3_600_000)
+    cg.__rwClutter = {
+      at: Date.now(),
+      p: fetch(CLUTTER_URL, { signal: AbortSignal.timeout(10_000) })
+        .then(async (r) => (r.ok ? new Uint32Array(await r.arrayBuffer()) : null))
+        .catch(() => null),
+    };
+  return cg.__rwClutter.p;
+}
+/** Ring (3–6 cells out) that decides "is it raining around this cell now". */
+const RING: [number, number][] = [];
+for (let dr = -6; dr <= 6; dr++) for (let dc = -6; dc <= 6; dc++) if (Math.max(Math.abs(dr), Math.abs(dc)) >= 3) RING.push([dr, dc]);
+
+/** A frame straight from the source, clutter included and not cached (for building the list). */
+export const operaRaw = (t: number) => limited(() => openOpera(t)).catch(() => null);
+
+export async function withClutterRemoved(o: OperaFile | null): Promise<OperaFile | null> {
+  if (!o) return o;
+  const cells = await clutterCells();
+  if (!cells?.length) return o;
+  const cols = o.grid.cols;
+  const listed = new Set(cells); // clutter around a cell doesn't count as rain around it
+  const read = o.read;
+  const isEcho = (v: number) => v !== o.nodata && v !== o.undetect && Number.isFinite(v) && v * o.gain + o.offset >= 10;
+  o.read = (r0, r1, c0, c1) => {
+    const src = read(r0, r1, c0, c1);
+    const w = c1 - c0, h = r1 - r0;
+    let out: Float64Array | null = null;
+    // The listed cells inside this window (the list is sorted by cell number).
+    let lo = 0, hi = cells.length;
+    const first = r0 * cols + c0;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (cells[m] < first) lo = m + 1; else hi = m; }
+    for (let k = lo; k < cells.length; k++) {
+      const cell = cells[k];
+      const r = Math.floor(cell / cols), c = cell - r * cols;
+      if (r >= r1) break;
+      if (c < c0 || c >= c1) continue;
+      const i = (r - r0) * w + (c - c0);
+      if (!isEcho(src[i])) continue;
+      let wet = 0, seen = 0;
+      for (const [dr, dc] of RING) {
+        const rr = r - r0 + dr, cc = c - c0 + dc;
+        if (rr < 0 || rr >= h || cc < 0 || cc >= w) continue;
+        if (listed.has((rr + r0) * cols + cc + c0)) continue;
+        seen++;
+        if (isEcho(src[rr * w + cc])) wet++;
+      }
+      if (seen && wet / seen >= 0.5) continue; // real rain all around it: keep
+      out ??= Float64Array.from(src);
+      out[i] = o.undetect;
+    }
+    return out ?? src;
+  };
+  return o;
+}
+
 export function opera(t: number): Promise<OperaFile | null> {
   let p = fileCache.get(t);
   // A remembered failure that is old enough is forgotten, so this call
@@ -225,7 +293,7 @@ export function opera(t: number): Promise<OperaFile | null> {
     // A download that throws (connection dropped half-way, disk full) counts
     // as "no file" like any other failure, instead of staying in the cache
     // as an error that every later tile for this time would be handed.
-    const made: Promise<OperaFile | null> = limited(() => openOpera(t)).catch((e) => {
+    const made: Promise<OperaFile | null> = limited(() => openOpera(t)).then(withClutterRemoved).catch((e) => {
       console.warn("[radar24] opera download failed", e);
       return null;
     });
