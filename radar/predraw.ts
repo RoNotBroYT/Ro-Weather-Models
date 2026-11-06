@@ -13,6 +13,7 @@
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { historyTimes, latestOperaTime, opera, renderTile } from "./lib/server/radar24";
 import { renderNowcastTile, NOWCAST_MAX_LEAD_MIN } from "./lib/server/radarNowcast";
+import { eumetsatSkipped, renderView, VIEW_SATS, type ViewSat } from "./lib/server/satView";
 
 const s3 = new S3Client({
   region: "auto",
@@ -41,8 +42,8 @@ const readDone = async (): Promise<string[]> => {
 };
 const done = new Set(await readDone());
 const exists = async (Key: string) => done.has(Key.replace(/\/\d+\/\d+\/\d+(@2x)?\.webp$/, ""));
-const put = (Key: string, buf: Buffer) => local ? fs.mkdir(`out/${Key.replace(/\/[^/]+$/, "")}`, { recursive: true }).then(() => fs.writeFile(`out/${Key}`, buf)) :
-  s3.send(new PutObjectCommand({ Bucket, Key, Body: buf, ContentType: "image/webp", CacheControl: "public, max-age=86400, immutable" }));
+const put = (Key: string, buf: Buffer, type = "image/webp") => local ? fs.mkdir(`out/${Key.replace(/\/[^/]+$/, "")}`, { recursive: true }).then(() => fs.writeFile(`out/${Key}`, buf)) :
+  s3.send(new PutObjectCommand({ Bucket, Key, Body: buf, ContentType: type, CacheControl: "public, max-age=86400, immutable" }));
 
 let failed = false;
 let drawn = 0, skipped = 0;
@@ -89,9 +90,39 @@ const first = jobs.splice(0, VIEW.length * 2);
 await pool(first);
 await pool(fjobs);
 await pool(jobs);
+// Satellite: the newest picture's squares (world, Europe, UK), as the site's map asks
+// for them (components/satView.ts satTiles). Keyed by the scans used, so never stale.
+const MAX = 20037508.342789244;
+const satKey = (p: string) => p.replace(/[^A-Za-z0-9-]/g, "_");
+try {
+  const loop = await fetch("https://www.ro-weather.app/api/satellite-loop?src=world&hours=1", { signal: AbortSignal.timeout(20_000) }).then((r) => r.json());
+  const f = loop?.frames?.[loop.frames.length - 1];
+  const parts: Partial<Record<ViewSat, string>> = {};
+  for (const [k, v] of Object.entries((f?.parts ?? {}) as Record<string, string | null>)) if (v && VIEW_SATS.includes(k as ViewSat)) parts[k as ViewSat] = v;
+  const p = Object.entries(f?.parts ?? {}).filter(([, v]) => !!v).map(([k, v]) => `${k}~${v}`).join(",");
+  const g = `sat/${satKey(p)}`;
+  if (p && !done.has(g)) {
+    const sq: [number, number, number][] = [];
+    for (const [z, x0, x1, y0, y1] of [[2, 0, 3, 0, 3], [3, 3, 4, 1, 2], [4, 7, 8, 4, 5], [5, 15, 16, 9, 10]] as const)
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) sq.push([z, x, y]);
+    let bad = false;
+    await pool(sq.map(([z, x, y]) => async () => {
+      const size = (2 * MAX) / 2 ** z, x0 = -MAX + x * size, y1 = MAX - y * size;
+      const buf = await renderView({ x0, y0: y1 - size, x1: x0 + size, y1, w: 512, h: 512, parts });
+      if (parts.mtg && eumetsatSkipped()) { bad = true; return; } // Meteosat missing: let the site draw it later
+      await put(`${g}/${z}/${x}/${y}.webp`, buf, buf.subarray(0, 4).toString("ascii") === "RIFF" ? "image/webp" : "image/jpeg");
+      drawn++;
+    }), 6);
+    if (!bad) groups.add(g);
+  }
+} catch (e) {
+  console.warn("satellite skipped:", String(e).slice(0, 200));
+}
+
 // A frame counts as done only when every one of its pictures was saved; keep the last 2 days.
 const cutoff = Date.now() - 2 * 86_400_000;
-const keep = [...done, ...(failed ? [] : [...groups].filter((g) => !unfinished.has(g)))].filter((g) => Number(g.split("/")[1]) > cutoff);
+const all = [...new Set([...done, ...(failed ? [] : [...groups].filter((g) => !unfinished.has(g)))])];
+const keep = [...all.filter((g) => !g.startsWith("sat/") && Number(g.split("/")[1]) > cutoff), ...all.filter((g) => g.startsWith("sat/")).slice(-40)];
 const body = Buffer.from(JSON.stringify([...new Set(keep)]));
 if (local) await fs.writeFile("out/done.json", body);
 else await s3.send(new PutObjectCommand({ Bucket, Key: "done.json", Body: body, ContentType: "application/json", CacheControl: "no-store" }));
