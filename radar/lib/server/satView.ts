@@ -88,7 +88,10 @@ const eumetsat = limiter(4); // EUMETSAT's map server refuses bursts
 // a bad spell never holds up the others. EUMETSAT, one big picture per frame, trips on
 // its first failure; GIBS, many small tiles, on its third in a row.
 const sourceDown = new Map<string, { fails: number; until: number }>();
-const TRIP_AFTER: Record<string, number> = { "view.eumetsat.int": 1 };
+// The GitHub drawing job (RW_PATIENT=1) has no visitor waiting, so it waits longer and
+// keeps trying: a quick give-up there saved coarse stand-in pictures for good.
+const PATIENT = process.env.RW_PATIENT === "1";
+const TRIP_AFTER: Record<string, number> = { "view.eumetsat.int": PATIENT ? 6 : 1 };
 const isDown = (host: string) => (sourceDown.get(host)?.until ?? 0) > Date.now();
 function noteResult(host: string, ok: boolean) {
   const st = sourceDown.get(host) ?? { fails: 0, until: 0 };
@@ -103,7 +106,7 @@ function noteResult(host: string, ok: boolean) {
 export const eumetsatSkipped = () => isDown("view.eumetsat.int");
 const gibs = limiter(24);
 
-async function fetchImage(url: string, tries = 2): Promise<Awaited<ReturnType<typeof loadImage>> | null> {
+async function fetchImage(url: string, tries = PATIENT ? 4 : 2): Promise<Awaited<ReturnType<typeof loadImage>> | null> {
   const host = new URL(url).host;
   if (isDown(host)) return null;
   const img = await fetchImageTries(url, tries);
@@ -118,7 +121,7 @@ async function fetchImageTries(url: string, tries: number): Promise<Awaited<Retu
       // A time limit: EUMETSAT's server sometimes takes 25 s and then fails, and with
       // no limit (and three tries) one slow satellite held the whole picture past 90 s.
       // Now it gives up after 12 s and the picture goes out with the other satellites.
-      const r = await fetch(url, { signal: AbortSignal.timeout(12_000) });
+      const r = await fetch(url, { signal: AbortSignal.timeout(PATIENT ? 40_000 : 12_000) });
       if (r.ok) {
         const b = Buffer.from(await r.arrayBuffer());
         if (b.length < 100) return null;
