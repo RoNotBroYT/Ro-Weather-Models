@@ -110,8 +110,11 @@ if (doing("sat")) try {
   const frames = [...(loop?.frames ?? [])].reverse();
   if (!frames.length) console.log("satellite: no frames in the list");
   const sq: [number, number, number][] = [];
-  for (const [z, x0, x1, y0, y1] of AREA)
+  // Plus the closest zoom satellite has (7) over Great Britain and Ireland: zoomed in on
+  // a town, the map uses these, and drawing them on the spot took over 10 s.
+  for (const [z, x0, x1, y0, y1] of [...AREA, [7, 56, 65, 37, 44]] as const)
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) sq.push([z, x, y]);
+  // Newest frames first get the close-ups; the whole loop fills over the next runs.
   const satStart = Date.now();
   let satSaved = 0, viaCira = 0;
   for (const f of frames) {
