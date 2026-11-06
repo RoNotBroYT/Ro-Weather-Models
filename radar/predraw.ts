@@ -53,9 +53,9 @@ const groups = new Set<string>();
 async function job(key: string, draw: () => Promise<{ buf: Buffer; final: boolean }>) {
   groups.add(group(key));
   if (await exists(key)) return void skipped++;
-  const { buf, final } = await draw();
+  const { buf, final } = await draw().catch((e) => { unfinished.add(group(key)); throw e; });
   if (!final) { unfinished.add(group(key)); return; } // still filling in at the source: the site draws it for now
-  await put(key, buf);
+  await put(key, buf).catch((e) => { unfinished.add(group(key)); throw e; });
   drawn++;
 }
 async function pool(jobs: (() => Promise<void>)[], n = 8) {
@@ -101,6 +101,7 @@ try {
   for (const [k, v] of Object.entries((f?.parts ?? {}) as Record<string, string | null>)) if (v && VIEW_SATS.includes(k as ViewSat)) parts[k as ViewSat] = v;
   const p = Object.entries(f?.parts ?? {}).filter(([, v]) => !!v).map(([k, v]) => `${k}~${v}`).join(",");
   const g = `sat/${satKey(p)}`;
+  if (!p) console.log("satellite: no frame in the list");
   if (p && !done.has(g)) {
     const sq: [number, number, number][] = [];
     for (const [z, x0, x1, y0, y1] of [[2, 0, 3, 0, 3], [3, 3, 4, 1, 2], [4, 7, 8, 4, 5], [5, 15, 16, 9, 10]] as const)
@@ -114,6 +115,7 @@ try {
       drawn++;
     }), 6);
     if (!bad) groups.add(g);
+    console.log(`satellite ${p}: ${bad ? "Meteosat unavailable, not kept" : "saved"}`);
   }
 } catch (e) {
   console.warn("satellite skipped:", String(e).slice(0, 200));
@@ -121,7 +123,7 @@ try {
 
 // A frame counts as done only when every one of its pictures was saved; keep the last 2 days.
 const cutoff = Date.now() - 2 * 86_400_000;
-const all = [...new Set([...done, ...(failed ? [] : [...groups].filter((g) => !unfinished.has(g)))])];
+const all = [...new Set([...done, ...([...groups].filter((g) => !unfinished.has(g)))])];
 const keep = [...all.filter((g) => !g.startsWith("sat/") && Number(g.split("/")[1]) > cutoff), ...all.filter((g) => g.startsWith("sat/")).slice(-40)];
 const body = Buffer.from(JSON.stringify([...new Set(keep)]));
 if (local) await fs.writeFile("out/done.json", body);
