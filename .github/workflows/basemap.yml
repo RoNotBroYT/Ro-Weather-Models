@@ -1,0 +1,36 @@
+name: Base map
+
+# Draws the radar page's base map (light and dark, no place names) as ready-made
+# picture squares, zoom 0–7, into R2 (ro-weather-radar, basemap/…). Run by hand
+# when the map style changes; the map itself hardly changes.
+on:
+  workflow_dispatch:
+
+jobs:
+  draw:
+    strategy:
+      fail-fast: false
+      matrix:
+        style: [liberty, dark]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: basemap
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # What the map renderer needs to draw without a screen.
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq xvfb libcurl4 libglfw3 libuv1 libjpeg-turbo8 libicu74 libopengl0 libegl1 libwebp7 > /dev/null
+      - run: npm install --no-audit --no-fund
+      - name: Draw and upload
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          xvfb-run -a node render.mjs ${{ matrix.style }} 0 5 ${{ matrix.shard }} 8
+          xvfb-run -a node render.mjs ${{ matrix.style }} 6 7 ${{ matrix.shard }} 8
