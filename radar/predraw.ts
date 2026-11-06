@@ -60,6 +60,9 @@ const groups = new Set<string>();
 async function job(key: string, draw: () => Promise<{ buf: Buffer; final: boolean }>) {
   groups.add(group(key));
   if (await exists(key)) return void skipped++;
+  // At most ~4 min of drawing per run (newest first), so every run finishes and records
+  // what it did; the rest of a first fill carries on in the next runs.
+  if (Date.now() - started > 240_000) return void unfinished.add(group(key));
   const { buf, final } = await draw().catch((e) => { unfinished.add(group(key)); throw e; });
   if (!final) { unfinished.add(group(key)); return; } // still filling in at the source: the site draws it for now
   await put(key, buf).catch((e) => { unfinished.add(group(key)); throw e; });
