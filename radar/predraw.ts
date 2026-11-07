@@ -83,9 +83,14 @@ const ok = new Set<number>();
 const radarWork = doing("radar") || doing("forecast");
 if (radarWork) await Promise.all((doing("radar") ? times : [latest]).map(async (t) => { if (await opera(t).catch(() => null)) ok.add(t); }));
 if (radarWork && !ok.has(latest)) { console.log("newest European radar file not readable: nothing saved"); process.exit(1); }
+// Past radar also at zoom 7 and 8 over Great Britain and Ireland: the app (and the site,
+// with your location on) opens zoomed in on a town, where nothing was drawn ahead.
+const CLOSE: [number, number, number][] = [];
+for (const [z, x0, x1, y0, y1] of [[7, 59, 66, 38, 44], [8, 118, 132, 77, 88]] as const)
+  for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) CLOSE.push([z, x, y]);
 const jobs: (() => Promise<void>)[] = [];
 for (const t of times.filter((t) => ok.has(t)))
-  for (const [z, x, y] of VIEW)
+  for (const [z, x, y] of [...VIEW, ...CLOSE])
     jobs.push(() => job(`tile/${t}/${z}/${x}/${y}@2x.webp`, () => renderTile(t, z, x, y, 2)));
 // The forecast, as the site's frame list makes it (UK and Europe only).
 const now = Date.now();
