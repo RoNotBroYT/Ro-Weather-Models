@@ -9,6 +9,7 @@
 import { promises as fsp } from "fs";
 import os from "os";
 import path from "path";
+import { mtgFlashes } from "./mtg";
 
 export type Flash = [number, number, number, number];
 /** Each satellite keeps the flashes nearer its own longitude (where both see one, once only). */
@@ -59,6 +60,12 @@ async function read(bucket: string, key: string): Promise<{ lat: number[]; lon: 
   }
 }
 
+/** GLM (the Americas, west of 40°W) and MTG LI (40°W eastwards: Europe, Africa, the UK). */
+export async function allFlashes(from: number, to: number) {
+  const [g, m] = await Promise.all([glmFlashes(from, to), mtgFlashes(from, to).catch(() => [])]);
+  return [...g.filter((f) => f.lon < -40), ...m.filter((f) => f.lon >= -40)];
+}
+
 /** All flashes from files that started in [from, to). */
 export async function glmFlashes(from: number, to: number): Promise<{ t: number; lon: number; lat: number; e: number }[]> {
   const out: { t: number; lon: number; lat: number; e: number }[] = [];
@@ -105,7 +112,7 @@ export async function saveLightning(
   for (let t = newest; t > newest - 24 * 3_600_000; t -= STEP) {
     if (have.has(t)) continue;
     if (Date.now() - started > budgetMs) break;
-    const f = await glmFlashes(t, t + STEP);
+    const f = await allFlashes(t, t + STEP);
     // [lon, lat, seconds into the piece, strength 0–3] — small enough to fetch a day of.
     const rows = f.map((x) => [+x.lon.toFixed(3), +x.lat.toFixed(3), Math.max(0, Math.round((x.t - t) / 1000)), Math.max(0, Math.min(3, Math.round(Math.log10(Math.max(x.e, 1e-16)) + 15)))]);
     await put(`lightning/${t}.json`, JSON.stringify(rows), 86_400);
@@ -132,7 +139,7 @@ export async function liveLightning(
   let writes = 0;
   while (Date.now() < untilMs) {
     const now = Date.now();
-    const got = await glmFlashes(upTo, now).catch(() => []);
+    const got = await allFlashes(upTo, now).catch(() => []);
     if (got.length) upTo = Math.max(upTo, ...got.map((f) => f.t)) + 1;
     flashes = [...flashes, ...got].filter((f) => f.t > now - 10 * 60_000);
     const rows = flashes.map((x) => [+x.lon.toFixed(3), +x.lat.toFixed(3), Math.max(0, Math.round((now - x.t) / 1000)), Math.max(0, Math.min(3, Math.round(Math.log10(Math.max(x.e, 1e-16)) + 15)))]);
@@ -141,5 +148,5 @@ export async function liveLightning(
     const wait = 20_000 - (Date.now() - now);
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   }
-  return `lightning live: ${writes} updates, ${flashes.length} flashes in the last 10 min`;
+  return `lightning live: ${writes} updates, ${flashes.length} flashes in the last 10 min (${flashes.filter((f) => f.lon >= -40).length} from MTG)`;
 }

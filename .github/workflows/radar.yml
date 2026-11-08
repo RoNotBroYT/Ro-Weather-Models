@@ -34,4 +34,6 @@ jobs:
           R2_BUCKET: ro-weather-radar
           PART: ${{ matrix.part }}
           RW_PATIENT: "1"
+          EUMETSAT_KEY: ${{ secrets.EUMETSAT_KEY }}
+          EUMETSAT_SECRET: ${{ secrets.EUMETSAT_SECRET }}
         run: bun predraw.ts
