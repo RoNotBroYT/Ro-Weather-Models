@@ -14,7 +14,7 @@ import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3
 import { historyTimes, latestOperaTime, opera, renderTile } from "./lib/server/radar24";
 import { renderNowcastTile, NOWCAST_MAX_LEAD_MIN } from "./lib/server/radarNowcast";
 import { buildClutter } from "./clutter";
-import { saveLightning } from "./lightning";
+import { liveLightning, saveLightning } from "./lightning";
 import { eumetsatSkipped, renderView, useMtgMosaics, VIEW_SATS, type ViewSat } from "./lib/server/satView";
 
 const s3 = new S3Client({
@@ -85,7 +85,11 @@ if (PART === "lightning") {
     if (local) { await fs.mkdir(`out/${Key.replace(/\/[^/]+$/, "")}`, { recursive: true }); return fs.writeFile(`out/${Key}`, body); }
     return s3.send(new PutObjectCommand({ Bucket, Key, Body: body, ContentType: "application/json", CacheControl: `public, max-age=${maxAge}` }));
   };
-  console.log(await saveLightning(get, putJson));
+  // Live first (what the map shows now), then the 24 h pieces in between live updates.
+  const runEnd = started + 4.6 * 60_000; // the next run (every 5 min) takes over
+  const live = liveLightning(putJson, runEnd);
+  console.log(await saveLightning(get, putJson, 150_000));
+  console.log(await live);
   process.exit(0);
 }
 

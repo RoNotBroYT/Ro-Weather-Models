@@ -117,3 +117,29 @@ export async function saveLightning(
   await put("lightning/index.json", JSON.stringify(keep), 60);
   return `lightning: saved ${saved} pieces (${flashes} flashes), ${keep.length} in the last 24 h`;
 }
+
+/**
+ * Live: for the rest of this run (the next run takes over as it ends), check every 20 s
+ * (the satellite's own rate) and keep lightning/live.json = the last 10 minutes of flashes,
+ * [lon, lat, seconds before `at`, strength]. About 30–60 s behind the real flash.
+ */
+export async function liveLightning(
+  put: (key: string, body: string, maxAge: number) => Promise<unknown>,
+  untilMs: number,
+): Promise<string> {
+  let flashes: { t: number; lon: number; lat: number; e: number }[] = [];
+  let upTo = Date.now() - 10 * 60_000;
+  let writes = 0;
+  while (Date.now() < untilMs) {
+    const now = Date.now();
+    const got = await glmFlashes(upTo, now).catch(() => []);
+    if (got.length) upTo = Math.max(upTo, ...got.map((f) => f.t)) + 1;
+    flashes = [...flashes, ...got].filter((f) => f.t > now - 10 * 60_000);
+    const rows = flashes.map((x) => [+x.lon.toFixed(3), +x.lat.toFixed(3), Math.max(0, Math.round((now - x.t) / 1000)), Math.max(0, Math.min(3, Math.round(Math.log10(Math.max(x.e, 1e-16)) + 15)))]);
+    await put("lightning/live.json", JSON.stringify({ at: now, flashes: rows }), 15);
+    writes++;
+    const wait = 20_000 - (Date.now() - now);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  }
+  return `lightning live: ${writes} updates, ${flashes.length} flashes in the last 10 min`;
+}
