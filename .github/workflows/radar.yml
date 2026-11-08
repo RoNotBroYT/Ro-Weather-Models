@@ -12,11 +12,11 @@ concurrency:
 
 jobs:
   draw:
-    # Three machines side by side: past radar frames, the forecast, satellite.
+    # Four machines side by side: past radar frames, the forecast, satellite, lightning.
     strategy:
       fail-fast: false
       matrix:
-        part: [radar, forecast, sat]
+        part: [radar, forecast, sat, lightning]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:

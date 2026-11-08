@@ -14,6 +14,7 @@ import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3
 import { historyTimes, latestOperaTime, opera, renderTile } from "./lib/server/radar24";
 import { renderNowcastTile, NOWCAST_MAX_LEAD_MIN } from "./lib/server/radarNowcast";
 import { buildClutter } from "./clutter";
+import { saveLightning } from "./lightning";
 import { eumetsatSkipped, renderView, useMtgMosaics, VIEW_SATS, type ViewSat } from "./lib/server/satView";
 
 const s3 = new S3Client({
@@ -72,6 +73,20 @@ async function job(key: string, draw: () => Promise<{ buf: Buffer; final: boolea
 async function pool(jobs: (() => Promise<void>)[], n = 8) {
   let i = 0;
   await Promise.all(Array.from({ length: n }, async () => { while (i < jobs.length) await jobs[i++]().catch((e) => { console.warn(String(e).slice(0, 200)); failed = true; }); }));
+}
+
+// Satellite lightning (GOES GLM): its own machine; nothing else from this file runs there.
+if (PART === "lightning") {
+  const get = async (Key: string) => {
+    if (local) return fs.readFile(`out/${Key}`, "utf8").catch(() => null);
+    try { return await (await s3.send(new GetObjectCommand({ Bucket, Key }))).Body!.transformToString(); } catch { return null; }
+  };
+  const putJson = async (Key: string, body: string, maxAge: number) => {
+    if (local) { await fs.mkdir(`out/${Key.replace(/\/[^/]+$/, "")}`, { recursive: true }); return fs.writeFile(`out/${Key}`, body); }
+    return s3.send(new PutObjectCommand({ Bucket, Key, Body: body, ContentType: "application/json", CacheControl: `public, max-age=${maxAge}` }));
+  };
+  console.log(await saveLightning(get, putJson));
+  process.exit(0);
 }
 
 const latest = await latestOperaTime();
