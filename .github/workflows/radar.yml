@@ -40,7 +40,7 @@ jobs:
 
   charts-warm:
     # Ask the site once for the first day of the newest chart run (pressure, wind,
-    # gusts squares at world/Europe zoom, plus the wind-line grid), so visitors get
+    # temperature squares at world/Europe zoom, plus the wind-line grid), so visitors get
     # them straight from the cache. Already-cached ones cost the site nothing.
     runs-on: ubuntu-latest
     timeout-minutes: 6
@@ -54,7 +54,7 @@ jobs:
           urls=()
           for L in $LEADS; do
             urls+=("$B/api/gfs/windgrid/$RUN/$L")
-            for layer in pressure wind gusts; do
+            for layer in pressure wind temperature; do
               for t in 2/1/1 2/2/1 2/1/2 2/2/2 3/3/2 3/4/2 3/3/3 3/4/3; do
                 for q in "?" "?s=2"; do urls+=("$B/api/gfs/tile/$layer/$RUN/$L/$t.webp$q"); done
               done
