@@ -1,6 +1,6 @@
 name: Radar
 
-# Draws the newest radar pictures into R2 (bucket ro-weather-radar), so the
+# Draws the newest radar pictures into Backblaze B2 (bucket ro-weather-maps), so the
 # website's paid server hardly draws radar. Started every 5 minutes by the
 # Cloudflare Worker "ro-weather-radar-warm" (GitHub's own timer runs late).
 on:
@@ -28,36 +28,15 @@ jobs:
       - run: bun install
       - name: Draw and upload
         env:
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ro-weather-radar
+          # Backblaze B2 (free, no card): uploads cost nothing.
+          R2_ENDPOINT: https://s3.us-east-005.backblazeb2.com
+          R2_REGION: us-east-005
+          R2_ACCESS_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.B2_APP_KEY }}
+          R2_BUCKET: ro-weather-maps
           PART: ${{ matrix.part }}
           RW_PATIENT: "1"
           EUMETSAT_KEY: ${{ secrets.EUMETSAT_KEY }}
           EUMETSAT_SECRET: ${{ secrets.EUMETSAT_SECRET }}
         run: bun predraw.ts
 
-  charts-warm:
-    # Ask the site once for the first day of the newest chart run (pressure, wind,
-    # gusts, temperature squares at world/Europe zoom, plus the wind-line grid), so visitors get
-    # them straight from the cache. Already-cached ones cost the site nothing.
-    runs-on: ubuntu-latest
-    timeout-minutes: 6
-    steps:
-      - name: Warm chart squares
-        run: |
-          B=https://www.ro-weather.app
-          META=$(curl -fsS $B/api/gfs/meta)
-          RUN=$(echo "$META" | jq -r .run)
-          LEADS=$(echo "$META" | jq -r '.leads[:9][]')
-          urls=()
-          for L in $LEADS; do
-            urls+=("$B/api/gfs/windgrid/$RUN/$L")
-            for layer in pressure wind gusts temperature; do
-              for t in 2/1/1 2/2/1 2/1/2 2/2/2 3/3/2 3/4/2 3/3/3 3/4/3; do
-                for q in "?" "?s=2"; do urls+=("$B/api/gfs/tile/$layer/$RUN/$L/$t.webp$q"); done
-              done
-            done
-          done
-          printf '%s\n' "${urls[@]}" | xargs -P 8 -n 1 curl -s -o /dev/null -w "%{http_code} %header{cf-cache-status}\n" | sort | uniq -c
