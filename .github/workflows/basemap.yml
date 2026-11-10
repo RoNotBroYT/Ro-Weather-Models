@@ -1,7 +1,7 @@
 name: Base map
 
 # Draws the radar page's base map (light and dark, no place names) as ready-made
-# picture squares, zoom 0–7, into R2 (ro-weather-radar, basemap/…). Run by hand
+# picture squares, zoom 0–7, into Backblaze B2 (ro-weather-maps, basemap/…). Run by hand
 # when the map style changes; the map itself hardly changes.
 on:
   workflow_dispatch:
@@ -28,9 +28,12 @@ jobs:
       - run: npm install --no-audit --no-fund
       - name: Draw and upload
         env:
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          # Backblaze B2 (free, no card).
+          R2_ENDPOINT: https://s3.us-east-005.backblazeb2.com
+          R2_REGION: us-east-005
+          R2_BUCKET: ro-weather-maps
+          R2_ACCESS_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.B2_APP_KEY }}
         run: |
           xvfb-run -a node render.mjs ${{ matrix.style }} 0 5 ${{ matrix.shard }} 8
           xvfb-run -a node render.mjs ${{ matrix.style }} 6 7 ${{ matrix.shard }} 8

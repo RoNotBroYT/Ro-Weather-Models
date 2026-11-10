@@ -18,10 +18,10 @@ const STYLE_URL = `https://tiles.openfreemap.org/styles/${style}`;
 const DETAIL = /^(building|aeroway|road_area_pier|road_pier|highway_path|highway_minor|road_oneway|railway|highway_name_other|landuse_|landcover_wood|place_other|place_suburb)/;
 
 const local = !process.env.R2_ENDPOINT;
-const s3 = local ? null : new S3Client({ region: "auto", endpoint: process.env.R2_ENDPOINT, credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY } });
+const s3 = local ? null : new S3Client({ region: process.env.R2_REGION ?? "auto", endpoint: process.env.R2_ENDPOINT, credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY } });
 const put = async (key, buf) => {
   if (local) { await fs.mkdir(`out/${key.replace(/\/[^/]+$/, "")}`, { recursive: true }); return fs.writeFile(`out/${key}`, buf); }
-  await s3.send(new PutObjectCommand({ Bucket: "ro-weather-radar", Key: key, Body: buf, ContentType: "image/webp", CacheControl: "public, max-age=604800" }));
+  await s3.send(new PutObjectCommand({ Bucket: process.env.R2_BUCKET ?? "ro-weather-radar", Key: key, Body: buf, ContentType: "image/webp", CacheControl: "public, max-age=604800" }));
 };
 
 const styleJson = await fetch(STYLE_URL).then((r) => r.json());
