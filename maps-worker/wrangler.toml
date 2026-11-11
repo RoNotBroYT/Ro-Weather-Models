@@ -5,3 +5,7 @@ workers_dev = true
 
 [vars]
 B2_BUCKET = "ro-weather-maps"
+
+[[routes]]
+pattern = "radar.ro-weather.app"
+custom_domain = true
