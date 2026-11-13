@@ -1,0 +1,25 @@
+name: Cleanup
+# Deletes map pictures older than 24 h from Backblaze (free 10 GB). Daily, and by hand.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: radar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - name: Delete old pictures
+        env:
+          R2_ENDPOINT: https://s3.us-east-005.backblazeb2.com
+          R2_REGION: us-east-005
+          R2_BUCKET: ro-weather-maps
+          R2_ACCESS_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.B2_APP_KEY }}
+        run: bun cleanup.ts
