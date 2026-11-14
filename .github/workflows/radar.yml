@@ -12,11 +12,11 @@ concurrency:
 
 jobs:
   draw:
-    # Four machines side by side: past radar frames, the forecast, satellite, lightning.
+    # Five machines side by side: past radar frames, the forecast, satellite, lightning, charts (GFS).
     strategy:
       fail-fast: false
       matrix:
-        part: [radar, forecast, sat, lightning]
+        part: [radar, forecast, sat, lightning, charts]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -38,5 +38,5 @@ jobs:
           RW_PATIENT: "1"
           EUMETSAT_KEY: ${{ secrets.EUMETSAT_KEY }}
           EUMETSAT_SECRET: ${{ secrets.EUMETSAT_SECRET }}
-        run: bun predraw.ts
+        run: if [ "$PART" = charts ]; then bun charts.ts; else bun predraw.ts; fi
 
