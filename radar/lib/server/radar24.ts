@@ -43,15 +43,26 @@ import {
   surfaceFromPixelDbz,
 } from "../radarHeight";
 
-const OPERA_S3 = "https://s3.waw3-1.cloudferro.com/openradar-24h";
+// OPERA composite mirrors, tried in order. The main bucket stopped publishing on
+// 11 Nov 2026; EUMETNET moved the feed to the ECMWF backup (same file names).
+// If one goes quiet, the next one is used automatically.
+const OPERA_MIRRORS = [
+  "https://s3.waw3-1.cloudferro.com/openradar-24h",
+  "https://object-store.os-api.cci1.ecmwf.int/openradar-24h-backup",
+];
+const OPERA_S3 = OPERA_MIRRORS[0];
 const pad = (n: number) => String(n).padStart(2, "0");
-export function operaUrl(t: number): string {
+/** The same frame's address on every mirror, main first. */
+export function operaUrls(t: number): string[] {
+  return OPERA_MIRRORS.map((b) => operaUrl(t, b));
+}
+export function operaUrl(t: number, base = OPERA_S3): string {
   const d = new Date(t);
   const y = d.getUTCFullYear();
   const mo = pad(d.getUTCMonth() + 1);
   const da = pad(d.getUTCDate());
   const stamp = `${y}${mo}${da}T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}`;
-  return `${OPERA_S3}/${y}/${mo}/${da}/OPERA/COMP/OPERA@${stamp}@0@DBZH.h5`;
+  return `${base}/${y}/${mo}/${da}/OPERA/COMP/OPERA@${stamp}@0@DBZH.h5`;
 }
 
 /** NEXRAD n0q mosaic tile for a time (IEM archive, 5-minute stamps, UTC). */
@@ -110,7 +121,11 @@ const num = (a: Record<string, { value: unknown }>, k: string) => {
 };
 
 async function openOpera(t: number): Promise<OperaFile | null> {
-  const res = await fetch(operaUrl(t), { cache: "no-store" }).catch(() => null);
+  let res: Response | null = null;
+  for (const u of operaUrls(t)) {
+    res = await fetch(u, { cache: "no-store" }).catch(() => null);
+    if (res?.ok) break;
+  }
   if (!res || !res.ok) return null;
   const { File: H5File } = await h5();
   const tmp = path.join(os.tmpdir(), `opera24-${t}.h5`);
@@ -1260,10 +1275,15 @@ export async function latestOperaTime(now = Date.now()): Promise<number> {
   const first = Math.floor((now - 5 * 60_000) / 300_000) * 300_000;
   const cands = Array.from({ length: 12 }, (_, i) => first - i * 300_000);
   const ok = await Promise.all(
+    // A frame counts if ANY mirror has it.
     cands.map((t) =>
-      fetch(operaUrl(t), { method: "HEAD", cache: "no-store", signal: AbortSignal.timeout(8000) })
-        .then((r) => r.ok)
-        .catch(() => false)
+      Promise.all(
+        operaUrls(t).map((u) =>
+          fetch(u, { method: "HEAD", cache: "no-store", signal: AbortSignal.timeout(8000) })
+            .then((r) => r.ok)
+            .catch(() => false)
+        )
+      ).then((r) => r.some(Boolean))
     )
   );
   const i = ok.indexOf(true);
