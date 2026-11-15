@@ -3,7 +3,7 @@ name: Cleanup
 on:
   workflow_dispatch:
   schedule:
-    - cron: "20 0 * * *"   # just after Backblaze's daily caps reset (00:00 UTC)
+    - cron: "20 0,6,12,18 * * *"   # every 6 h, the first just after Backblaze's daily caps reset (00:00 UTC)
 jobs:
   clean:
     runs-on: ubuntu-latest
