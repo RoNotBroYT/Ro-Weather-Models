@@ -119,7 +119,9 @@ if (switchNow) {
   const prev = meta && meta.run !== run ? meta.run : meta?.prev;
   await put("gfs/meta.json", JSON.stringify({ run, leads: GFS_LEADS, rainLeads: RAIN_SHORT, ready, prev, source: "NOAA GFS 0.5° (open data on AWS) — model forecast, not observation" } satisfies Meta), "application/json", 60);
   // Keep only the run on show: every other chart run is deleted (free storage is 10 GB, shared with radar).
-  if (!local) await deleteOldRuns(new Set([run]));
+  // Only when a NEW run goes on show (4 times a day): listing the bucket counts against
+  // Backblaze's free daily transaction cap, and doing it every 5 minutes used it up (15 Nov).
+  if (!local && meta && meta.run !== run) await deleteOldRuns(new Set([run]));
 }
 console.log(`[charts] run ${new Date(run).toISOString()}: drew ${drawn} squares, ${ready.length}/${ALL_LEADS.length} hours ready, ${failed} failed, ${Math.round((Date.now() - started) / 1000)} s`);
 
