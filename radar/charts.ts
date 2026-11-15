@@ -10,8 +10,8 @@
  *   gfs/contours/<layer>/<run>/<lead>.json
  *   gfs/windgrid/<run>/<lead>.json
  *
- * Space (free plan is 10 GB, shared with radar): a run is ~1.5 GB, so only the newest
- * two runs are kept; older chart runs are deleted here as soon as a newer one is ready.
+ * Space (free plan is 10 GB, shared with radar): only the run on show is kept, to +120 h;
+ * older chart runs are deleted as soon as a newer one is on show (15 Nov: the cap was hit).
  */
 import { S3Client, PutObjectCommand, GetObjectCommand, ListObjectVersionsCommand, DeleteObjectsCommand } from "@aws-sdk/client-s3";
 import { latestGfsRun, GFS_LEADS, RAIN_LEADS } from "./lib/server/gfs";
@@ -47,8 +47,10 @@ for (const [z, x0, x1, y0, y1] of AREA) for (let x = x0; x <= x1; x++) for (let 
 
 // The page's visible layers, by the tile layer each one draws (lib/chartLayers.ts).
 const TILE_LAYERS = ["pressure", "wind", "gusts", "temperature", "cape", "shear", "z500", "t850", "thickness", "raincloud", "winterdepth"] as const;
-const leadsFor = (l: string) => (l === "raincloud" || l === "winterdepth" ? RAIN_LEADS : GFS_LEADS);
-const ALL_LEADS = [...new Set([...GFS_LEADS, ...RAIN_LEADS])].sort((a, b) => a - b);
+// Rain/winter only to +120 h like the rest (to +384 h was most of the space: free cap is 10 GB).
+const RAIN_SHORT = RAIN_LEADS.filter((l) => l <= 120);
+const leadsFor = (l: string) => (l === "raincloud" || l === "winterdepth" ? RAIN_SHORT : GFS_LEADS);
+const ALL_LEADS = [...new Set([...GFS_LEADS, ...RAIN_SHORT])].sort((a, b) => a - b);
 
 const run = await latestGfsRun();
 if (run == null) { console.log("no complete GFS run found"); process.exit(0); }
@@ -85,7 +87,7 @@ for (const lead of ALL_LEADS) {
     for (const c of ["z500", "t850", "thickness"])
       jsonJobs.push(() => group(`con/${c}/${lead}`, async () => put(`gfs/contours/${c}/${run}/${lead}.json`, JSON.stringify(await gfsContours(run, lead, c)), "application/json")));
   }
-  if (RAIN_LEADS.includes(lead)) {
+  if (RAIN_SHORT.includes(lead)) {
     jsonJobs.push(() => group(`con/snowdepth/${lead}`, async () => put(`gfs/contours/snowdepth/${run}/${lead}.json`, JSON.stringify(await gfsContours(run, lead, "snowdepth")), "application/json")));
     if (!GFS_LEADS.includes(lead)) jsonJobs.push(() => group(`con/thickness/${lead}`, async () => put(`gfs/contours/thickness/${run}/${lead}.json`, JSON.stringify(await gfsContours(run, lead, "thickness")), "application/json")));
   }
@@ -104,7 +106,7 @@ for (const lead of ALL_LEADS) {
 const need = (lead: number) => [
   `iso/${lead}`,
   ...(GFS_LEADS.includes(lead) ? [`wind/${lead}`, "z500", "t850", "thickness"].map((c) => (c.startsWith("wind") ? c : `con/${c}/${lead}`)) : []),
-  ...(RAIN_LEADS.includes(lead) ? [`con/snowdepth/${lead}`, ...(GFS_LEADS.includes(lead) ? [] : [`con/thickness/${lead}`])] : []),
+  ...(RAIN_SHORT.includes(lead) ? [`con/snowdepth/${lead}`, ...(GFS_LEADS.includes(lead) ? [] : [`con/thickness/${lead}`])] : []),
   ...TILE_LAYERS.filter((l) => leadsFor(l).includes(lead)).map((l) => `tile/${l}/${lead}`),
 ];
 const ready = ALL_LEADS.filter((ld) => need(ld).every((k) => done.has(k)));
@@ -115,9 +117,9 @@ const firstDay = GFS_LEADS.filter((l) => l <= 24);
 const switchNow = !meta || meta.run === run || firstDay.every((l) => ready.includes(l));
 if (switchNow) {
   const prev = meta && meta.run !== run ? meta.run : meta?.prev;
-  await put("gfs/meta.json", JSON.stringify({ run, leads: GFS_LEADS, rainLeads: RAIN_LEADS, ready, prev, source: "NOAA GFS 0.5° (open data on AWS) — model forecast, not observation" } satisfies Meta), "application/json", 60);
-  // Keep the run on show and the one before it; delete every older chart run.
-  if (!local) await deleteOldRuns(new Set([run, prev].filter((r): r is number => r != null)));
+  await put("gfs/meta.json", JSON.stringify({ run, leads: GFS_LEADS, rainLeads: RAIN_SHORT, ready, prev, source: "NOAA GFS 0.5° (open data on AWS) — model forecast, not observation" } satisfies Meta), "application/json", 60);
+  // Keep only the run on show: every other chart run is deleted (free storage is 10 GB, shared with radar).
+  if (!local) await deleteOldRuns(new Set([run]));
 }
 console.log(`[charts] run ${new Date(run).toISOString()}: drew ${drawn} squares, ${ready.length}/${ALL_LEADS.length} hours ready, ${failed} failed, ${Math.round((Date.now() - started) / 1000)} s`);
 
