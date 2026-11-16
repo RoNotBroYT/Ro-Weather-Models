@@ -14,6 +14,7 @@
  * older chart runs are deleted as soon as a newer one is on show (15 Nov: the cap was hit).
  */
 import { S3Client, PutObjectCommand, GetObjectCommand, ListObjectVersionsCommand, DeleteObjectsCommand } from "@aws-sdk/client-s3";
+import { kvGet, kvPut } from "./kv";
 import { latestGfsRun, GFS_LEADS, RAIN_LEADS } from "./lib/server/gfs";
 import { renderGfsTile, gfsIsobars, gfsContours, gfsWindGrid } from "./lib/server/gfsRender";
 
@@ -29,12 +30,16 @@ const started = Date.now();
 const BUDGET = Number(process.env.CHART_BUDGET_MS ?? 240_000);
 
 const put = async (Key: string, body: Buffer | string, type: string, maxAge = 86400) => {
+  // The chart run and the done list go to KV too (the Worker reads them from there).
+  if (!local && (Key === "gfs/meta.json" || /^done-/.test(Key))) await kvPut(Key, body);
   if (local) { await fs.mkdir(`out/${Key}`.replace(/\/[^/]+$/, ""), { recursive: true }); return void (await fs.writeFile(`out/${Key}`, body)); }
   await s3.send(new PutObjectCommand({ Bucket, Key, Body: body, ContentType: type, CacheControl: maxAge ? `public, max-age=${maxAge}${maxAge >= 86400 ? ", immutable" : ""}` : "no-store" }));
 };
 const getJson = async <T,>(Key: string, fallback: T): Promise<T> => {
   try {
     if (local) return JSON.parse(await fs.readFile(`out/${Key}`, "utf8"));
+    const k = await kvGet(Key);
+    if (k) return JSON.parse(k);
     return JSON.parse(await (await s3.send(new GetObjectCommand({ Bucket, Key }))).Body!.transformToString());
   } catch { return fallback; }
 };

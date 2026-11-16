@@ -11,6 +11,7 @@
  * Old pictures are removed by the bucket's 2-day rule.
  */
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { kvGet, kvPut } from "./kv";
 import { historyTimes, latestOperaTime, opera, renderTile } from "./lib/server/radar24";
 import { renderNowcastTile, NOWCAST_MAX_LEAD_MIN } from "./lib/server/radarNowcast";
 import { buildClutter } from "./clutter";
@@ -45,6 +46,8 @@ const fs = await import("fs/promises");
 const readDone = async (): Promise<string[]> => {
   try {
     if (local) return JSON.parse(await fs.readFile(`out/${DONE}`, "utf8"));
+    const k = await kvGet(DONE);
+    if (k) return JSON.parse(k);
     const r = await s3.send(new GetObjectCommand({ Bucket, Key: DONE }));
     return JSON.parse(await r.Body!.transformToString());
   } catch { return []; }
@@ -199,5 +202,8 @@ const all = [...new Set([...done, ...([...groups].filter((g) => !unfinished.has(
 const keep = [...all.filter((g) => !/^(s2|s3|sat)\//.test(g) && Number(g.split("/")[1]) > cutoff), ...all.filter((g) => g.startsWith("s3/")).slice(-80)];
 const body = Buffer.from(JSON.stringify([...new Set(keep)]));
 if (local) await fs.writeFile(`out/${DONE}`, body);
-else await s3.send(new PutObjectCommand({ Bucket, Key: DONE, Body: body, ContentType: "application/json", CacheControl: "no-store" }));
+else {
+  await kvPut(DONE, body);
+  await s3.send(new PutObjectCommand({ Bucket, Key: DONE, Body: body, ContentType: "application/json", CacheControl: "no-store" }));
+}
 console.log(`[${PART}] newest ${new Date(latest).toISOString()}: drew ${drawn}, already there ${skipped}, ${Math.round((Date.now() - started) / 1000)} s`);

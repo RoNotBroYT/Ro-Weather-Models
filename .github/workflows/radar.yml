@@ -35,6 +35,9 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.B2_APP_KEY }}
           R2_BUCKET: ro-weather-maps
           PART: ${{ matrix.part }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: dedc07a5683632eda32bc8dccda3ed43
+          CF_KV_NS: c2451b6d00b548f78618402535d577f0
           RW_PATIENT: "1"
           EUMETSAT_KEY: ${{ secrets.EUMETSAT_KEY }}
           EUMETSAT_SECRET: ${{ secrets.EUMETSAT_SECRET }}

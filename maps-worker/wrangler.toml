@@ -9,3 +9,8 @@ B2_BUCKET = "ro-weather-maps"
 [[routes]]
 pattern = "radar.ro-weather.app"
 custom_domain = true
+
+# The small lists (what's ready, the chart run) and the shared Backblaze login (16 Nov).
+[[kv_namespaces]]
+binding = "LISTS"
+id = "c2451b6d00b548f78618402535d577f0"
