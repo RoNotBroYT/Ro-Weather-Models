@@ -64,6 +64,18 @@ const RAIN_SHORT = RAIN_LEADS.filter((l) => l <= 120);
 const leadsFor = (l: string) => (l === "raincloud" || l === "winterdepth" ? RAIN_SHORT : GFS_LEADS);
 const ALL_LEADS = [...new Set([...GFS_LEADS, ...RAIN_SHORT])].sort((a, b) => a - b);
 
+// Snow on the ground, once a day (NOAA IMS, see snowcover.ts): a see-through picture for the maps.
+if (!local && d1On) try {
+  const have = await fetch("https://radar.ro-weather.app/snowcover/latest.json", { signal: AbortSignal.timeout(15_000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const { latestIms, snowPicture, BOUNDS } = await import("./snowcover");
+  const ims = await latestIms();
+  if (ims && have?.day !== ims.day) {
+    await putFile("snowcover/latest.png", await snowPicture(ims.grid));
+    await putFile("snowcover/latest.json", JSON.stringify({ day: ims.day, bounds: BOUNDS, source: "NOAA/NESDIS IMS 4 km snow and ice analysis" }));
+    console.log("snow cover saved for", ims.day);
+  }
+} catch (e) { console.warn("snow cover", String(e).slice(0, 160)); }
+
 const run = await latestGfsRun();
 if (run == null) { console.log("no complete GFS run found"); process.exit(0); }
 
