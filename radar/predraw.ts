@@ -13,6 +13,7 @@
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { kvGet, kvPut } from "./kv";
 import { d1On, hold, flush, pending, putFile } from "./d1";
+import { wetBulbNow, wetBulbSettled } from "./lib/server/wetbulb";
 import { historyTimes, latestOperaTime, opera, renderTile } from "./lib/server/radar24";
 import { renderNowcastTile, NOWCAST_MAX_LEAD_MIN } from "./lib/server/radarNowcast";
 import { buildClutter } from "./clutter";
@@ -25,7 +26,7 @@ const s3 = new S3Client({
   credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID!, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY! },
 });
 const Bucket = process.env.R2_BUCKET ?? "ro-weather-radar";
-const started = Date.now();
+let started = Date.now();
 // Which share of the work this machine does (the GitHub job runs them side by side):
 // "radar" = past frames, "forecast", "sat"; unset = all (a local test).
 const PART = process.env.PART ?? "all";
@@ -92,7 +93,9 @@ if (PART === "lightning") {
   };
   const putJson = async (Key: string, body: string, maxAge: number) => {
     if (local) { await fs.mkdir(`out/${Key.replace(/\/[^/]+$/, "")}`, { recursive: true }); return fs.writeFile(`out/${Key}`, body); }
-    if (d1On) return putFile(Key, body);
+    // A dropped connection must not stop the whole lightning job (17 Nov): log it; the next
+    // save (20 s later, or the next run) carries on.
+    if (d1On) return putFile(Key, body).catch((e) => console.warn("lightning save", Key, String(e).slice(0, 120)));
     return s3.send(new PutObjectCommand({ Bucket, Key, Body: body, ContentType: "application/json", CacheControl: `public, max-age=${maxAge}` }));
   };
   // Live first (what the map shows now), then the 24 h pieces in between live updates.
@@ -104,6 +107,16 @@ if (PART === "lightning") {
 }
 
 const latest = await latestOperaTime();
+// Rain / sleet / snow by wet-bulb (wetbulb.ts): load the ICON-EU fields, ground heights and
+// airports BEFORE drawing (they take a minute or two), so every picture uses them; the drawing
+// budget starts after.
+if (PART === "radar" || PART === "forecast") {
+  const t0 = Date.now();
+  for (const t of [latest, latest + 3_600_000]) wetBulbNow(t);
+  while (!wetBulbSettled(latest) && Date.now() - t0 < 180_000) await new Promise((r) => setTimeout(r, 1000));
+  console.log(`[wetbulb] ready after ${Math.round((Date.now() - t0) / 1000)} s: ${wetBulbNow(latest) ? "ICON-EU" : "not available, GFS rule"}`);
+  started = Date.now();
+}
 // Newest first; a fresh day fills in once, after that each run draws only what is new.
 const times = [...new Set([[2, 5], [6, 10], [12, 20], [24, 30]].flatMap(([h, st]) => historyTimes(h, st, latest)))].sort((a, b) => b - a);
 // Never save a picture drawn without its European radar file (a failed download
