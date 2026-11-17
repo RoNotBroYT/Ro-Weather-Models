@@ -47,10 +47,15 @@ async function sendOne(recs: Buffer[], what: string) {
 }
 
 /** Send one finished frame's squares (packed, split if big); kept `hours` hours. */
-export async function flush(g: string, hours: number) {
+// How long each kind is kept, so each pair of free databases (500 MB each) never fills:
+// radar 7 h (the lists offer 6 h), forecast 2 h (only the newest run is shown), satellite 13 h
+// (the 12 h loop), charts 14 h (the newest run and the one before; runs come every 6 h).
+export const keepHours = (k: string) => k.startsWith("tile/") ? 7 : k.startsWith("nowcast/") ? 2 : k.startsWith("s3/") ? 13 : 14;
+
+export async function flush(g: string, _hours?: number) {
   const gm = pending.get(g);
   if (!gm) return;
-  const exp = Math.floor(Date.now() / 1000) + hours * 3600;
+  const exp = Math.floor(Date.now() / 1000) + keepHours(g) * 3600;
   const recs: Buffer[] = [];
   for (const [blk, sq] of gm) {
     let part = 0;
@@ -70,6 +75,6 @@ export async function flush(g: string, hours: number) {
 }
 
 /** A whole file (chart lines, wind grid) under its own address; kept `hours` hours. */
-export async function putFile(Key: string, body: Buffer | string, hours: number) {
-  await send(rec(Key, 0, Math.floor(Date.now() / 1000) + hours * 3600, Buffer.from(body)), Key);
+export async function putFile(Key: string, body: Buffer | string, _hours?: number) {
+  await send(rec(Key, 0, Math.floor(Date.now() / 1000) + keepHours(Key) * 3600, Buffer.from(body)), Key);
 }

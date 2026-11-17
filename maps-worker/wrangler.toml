@@ -21,3 +21,47 @@ id = "c2451b6d00b548f78618402535d577f0"
 binding = "DB"
 database_name = "ro-weather-tiles"
 database_id = "8b12e116-2b44-45f2-a36a-cd730077bcf4"
+
+# Free D1 holds 500 MB a database (5 GB in all), so the pictures are spread over eight:
+# 0-1 radar, 2-3 forecast, 4-5 satellite, 6-7 charts (two each, by key). "DB" above is the first,
+# full one, still read for the radar frames already in it until they expire.
+[[d1_databases]]
+binding = "T0"
+database_name = "ro-weather-tiles-0"
+database_id = "7953407e-f3a5-4a0d-8046-2e79b439c89d"
+
+[[d1_databases]]
+binding = "T1"
+database_name = "ro-weather-tiles-1"
+database_id = "58b9e8fc-a9af-45e6-b05f-568f3e8f806d"
+
+[[d1_databases]]
+binding = "T2"
+database_name = "ro-weather-tiles-2"
+database_id = "de7aa116-ad32-4baf-9bba-3dd03933b23d"
+
+[[d1_databases]]
+binding = "T3"
+database_name = "ro-weather-tiles-3"
+database_id = "e66dfb4a-cb08-44fb-9a61-7d1a4576949a"
+
+[[d1_databases]]
+binding = "T4"
+database_name = "ro-weather-tiles-4"
+database_id = "c7597b47-ef74-44f1-b63d-6fad3ff3af3c"
+
+[[d1_databases]]
+binding = "T5"
+database_name = "ro-weather-tiles-5"
+database_id = "aa12fcce-86a7-4de0-9518-c6386095bc93"
+
+[[d1_databases]]
+binding = "T6"
+database_name = "ro-weather-tiles-6"
+database_id = "1897623d-e259-44cd-b0ae-f86954004e8d"
+
+[[d1_databases]]
+binding = "T7"
+database_name = "ro-weather-tiles-7"
+database_id = "9a0cfadd-4ec9-4838-a28e-0b63ab8e7ac7"
+

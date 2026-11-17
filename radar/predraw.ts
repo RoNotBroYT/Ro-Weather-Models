@@ -208,7 +208,7 @@ for (const g of [...pending.keys()]) {
 // (the cleanup deletes older pictures, so older frames must not be offered).
 const cutoff = Date.now() - 6 * 3600_000;
 const all = [...new Set([...done, ...([...groups].filter((g) => !unfinished.has(g)))])];
-const keep = [...all.filter((g) => !/^(s2|s3|sat)\//.test(g) && Number(g.split("/")[1]) > cutoff), ...all.filter((g) => g.startsWith("s3/")).slice(-80)];
+const keep = [...all.filter((g) => !/^(s2|s3|sat)\//.test(g) && Number(g.split("/")[1]) > cutoff), ...all.filter((g) => g.startsWith("s3/")).slice(useD1 ? -36 : -80)];
 const body = Buffer.from(JSON.stringify([...new Set(keep), ...(useD1 ? ["d1"] : [])]));
 if (local) await fs.writeFile(`out/${DONE}`, body);
 else {

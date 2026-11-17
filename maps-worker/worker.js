@@ -27,12 +27,22 @@ async function authorize(env) {
 // u32 length, then the pictures. Big blocks are split into parts, each with its own index.
 const B = 16;
 const PICT = /^((?:tile|nowcast|s3|gfs\/tile)\/.+)\/(\d+)\/(\d+)\/(\d+)(@2x)?\.webp$/;
+// Which of the eight databases a row lives in: two per kind, chosen by the row's own key.
+function shard(env, k) {
+  const kind = k.startsWith("tile/") ? 0 : k.startsWith("nowcast/") ? 1 : k.startsWith("s3/") ? 2 : 3;
+  let h = 2166136261;
+  for (let i = 0; i < k.length; i++) { h ^= k.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return env["T" + (kind * 2 + ((h >>> 0) & 1))];
+}
+const ALL = (env) => [0, 1, 2, 3, 4, 5, 6, 7].map((i) => env["T" + i]).filter(Boolean);
+
 async function fromD1(env, key) {
   const m = PICT.exec(key);
-  if (!m || !env.DB) return null;
+  if (!m || !env.T0) return null;
   const [, g, z, xs, ys, s = ""] = m, x = +xs, y = +ys;
   const blk = `${g}/${z}/${Math.floor(x / B)}/${Math.floor(y / B)}${s}`;
-  const { results } = await env.DB.prepare("SELECT data FROM tiles WHERE k = ?").bind(blk).all();
+  let { results } = await shard(env, blk).prepare("SELECT data FROM tiles WHERE k = ?").bind(blk).all();
+  if (!results?.length && env.DB) ({ results } = await env.DB.prepare("SELECT data FROM tiles WHERE k = ?").bind(blk).all());
   for (const r of results ?? []) {
     const u = new Uint8Array(r.data), v = new DataView(u.buffer, u.byteOffset, u.byteLength);
     const n = v.getUint32(0), base = 4 + n * 12;
@@ -59,20 +69,27 @@ async function store(req, env) {
     const part = v.getUint32(o), exp = v.getUint32(o + 4), dl = v.getUint32(o + 8); o += 12;
     rows.push([k, part, exp, u.slice(o, o + dl)]); o += dl;
   }
-  const keys = [...new Set(rows.map((r) => r[0]))];
-  const st = [
-    ...keys.map((k) => env.DB.prepare("DELETE FROM tiles WHERE k = ?").bind(k)),
-    ...rows.map(([k, part, exp, d]) => env.DB.prepare("INSERT OR REPLACE INTO tiles (k, part, exp, data) VALUES (?, ?, ?, ?)").bind(k, part, exp, d)),
-  ];
-  if (new URL(req.url).searchParams.has("clean")) st.push(env.DB.prepare("DELETE FROM tiles WHERE exp < ?").bind(Math.floor(Date.now() / 1000)));
-  await env.DB.batch(st);
+  // Per database: drop the old rows of these keys, then write the new ones.
+  const per = new Map();
+  for (const r of rows) { const db = shard(env, r[0]); if (!per.has(db)) per.set(db, []); per.get(db).push(r); }
+  for (const [db, rs] of per) {
+    const keys = [...new Set(rs.map((r) => r[0]))];
+    await db.batch([
+      ...keys.map((k) => db.prepare("DELETE FROM tiles WHERE k = ?").bind(k)),
+      ...rs.map(([k, part, exp, d]) => db.prepare("INSERT OR REPLACE INTO tiles (k, part, exp, data) VALUES (?, ?, ?, ?)").bind(k, part, exp, d)),
+    ]);
+  }
+  if (new URL(req.url).searchParams.has("clean")) {
+    const now = Math.floor(Date.now() / 1000);
+    await Promise.all([...ALL(env), env.DB].filter(Boolean).map((db) => db.prepare("DELETE FROM tiles WHERE exp < ?").bind(now).run().catch(() => null)));
+  }
   return new Response(`stored ${rows.length}`, { status: 200 });
 }
 
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
-    if (req.method === "POST" && url.pathname === "/_put") return store(req, env);
+    if (req.method === "POST" && url.pathname === "/_put") return store(req, env).catch((e) => new Response("store failed: " + String(e?.message ?? e).slice(0, 300), { status: 500 }));
     if (req.method !== "GET" && req.method !== "HEAD") return new Response("no", { status: 405 });
     const key = decodeURIComponent(url.pathname.slice(1));
     if (!key) return new Response("Ro-Weather maps", { status: 200 });
@@ -101,8 +118,8 @@ export default {
       return res;
     }
     // Chart line files and wind grids, stored whole in D1 under their own address.
-    if (env.DB && /^gfs\/(isobars|contours|windgrid)\//.test(key)) {
-      const row = await env.DB.prepare("SELECT data FROM tiles WHERE k = ? AND part = 0").bind(key).first().catch(() => null);
+    if (env.T0 && /^gfs\/(isobars|contours|windgrid)\//.test(key)) {
+      const row = await shard(env, key).prepare("SELECT data FROM tiles WHERE k = ? AND part = 0").bind(key).first().catch(() => null);
       if (row) {
         res = new Response(row.data, { status: 200, headers: { "Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400, immutable", "Content-Type": "application/json" } });
         ctx.waitUntil(cache.put(cacheKey, res.clone()));
