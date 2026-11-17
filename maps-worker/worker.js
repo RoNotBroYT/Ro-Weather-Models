@@ -118,10 +118,12 @@ export default {
       return res;
     }
     // Chart line files and wind grids, stored whole in D1 under their own address.
-    if (env.T0 && /^gfs\/(isobars|contours|windgrid)\//.test(key)) {
+    if (env.T0 && /^(gfs\/(isobars|contours|windgrid)|lightning)\//.test(key)) {
       const row = await shard(env, key).prepare("SELECT data FROM tiles WHERE k = ? AND part = 0").bind(key).first().catch(() => null);
       if (row) {
-        res = new Response(row.data, { status: 200, headers: { "Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400, immutable", "Content-Type": "application/json" } });
+        // Live lightning changes every 20 s, its list every 5 min; the rest never changes.
+        const age = key === "lightning/live.json" ? "public, max-age=15" : key === "lightning/index.json" ? "public, max-age=60" : "public, max-age=86400, immutable";
+        res = new Response(row.data, { status: 200, headers: { "Access-Control-Allow-Origin": "*", "Cache-Control": age, "Content-Type": "application/json" } });
         ctx.waitUntil(cache.put(cacheKey, res.clone()));
         return res;
       }

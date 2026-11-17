@@ -12,7 +12,7 @@
  */
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { kvGet, kvPut } from "./kv";
-import { d1On, hold, flush, pending } from "./d1";
+import { d1On, hold, flush, pending, putFile } from "./d1";
 import { historyTimes, latestOperaTime, opera, renderTile } from "./lib/server/radar24";
 import { renderNowcastTile, NOWCAST_MAX_LEAD_MIN } from "./lib/server/radarNowcast";
 import { buildClutter } from "./clutter";
@@ -86,10 +86,13 @@ async function pool(jobs: (() => Promise<void>)[], n = 8) {
 if (PART === "lightning") {
   const get = async (Key: string) => {
     if (local) return fs.readFile(`out/${Key}`, "utf8").catch(() => null);
+    // From D1 through the Worker (17 Nov: Backblaze's free downloads ran out).
+    if (d1On) return fetch(`https://radar.ro-weather.app/${Key}`, { signal: AbortSignal.timeout(15_000) }).then((r) => (r.ok ? r.text() : null)).catch(() => null);
     try { return await (await s3.send(new GetObjectCommand({ Bucket, Key }))).Body!.transformToString(); } catch { return null; }
   };
   const putJson = async (Key: string, body: string, maxAge: number) => {
     if (local) { await fs.mkdir(`out/${Key.replace(/\/[^/]+$/, "")}`, { recursive: true }); return fs.writeFile(`out/${Key}`, body); }
+    if (d1On) return putFile(Key, body);
     return s3.send(new PutObjectCommand({ Bucket, Key, Body: body, ContentType: "application/json", CacheControl: `public, max-age=${maxAge}` }));
   };
   // Live first (what the map shows now), then the 24 h pieces in between live updates.
