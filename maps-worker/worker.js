@@ -26,7 +26,7 @@ async function authorize(env) {
 // 2,500 downloads a day ran out. A row: u32 count, then per square u16 x, u16 y, u32 offset,
 // u32 length, then the pictures. Big blocks are split into parts, each with its own index.
 const B = 16;
-const PICT = /^((?:tile|nowcast|s3)\/.+)\/(\d+)\/(\d+)\/(\d+)(@2x)?\.webp$/;
+const PICT = /^((?:tile|nowcast|s3|gfs\/tile)\/.+)\/(\d+)\/(\d+)\/(\d+)(@2x)?\.webp$/;
 async function fromD1(env, key) {
   const m = PICT.exec(key);
   if (!m || !env.DB) return null;
@@ -99,6 +99,15 @@ export default {
       res = new Response(pic, { status: 200, headers: hk });
       ctx.waitUntil(cache.put(cacheKey, res.clone()));
       return res;
+    }
+    // Chart line files and wind grids, stored whole in D1 under their own address.
+    if (env.DB && /^gfs\/(isobars|contours|windgrid)\//.test(key)) {
+      const row = await env.DB.prepare("SELECT data FROM tiles WHERE k = ? AND part = 0").bind(key).first().catch(() => null);
+      if (row) {
+        res = new Response(row.data, { status: 200, headers: { "Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400, immutable", "Content-Type": "application/json" } });
+        ctx.waitUntil(cache.put(cacheKey, res.clone()));
+        return res;
+      }
     }
     let a = await authorize(env);
     const path = `${a.url}/file/${env.B2_BUCKET}/${key.split("/").map(encodeURIComponent).join("/")}`;

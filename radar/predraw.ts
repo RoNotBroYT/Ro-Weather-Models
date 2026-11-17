@@ -12,6 +12,7 @@
  */
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { kvGet, kvPut } from "./kv";
+import { d1On, hold, flush, pending } from "./d1";
 import { historyTimes, latestOperaTime, opera, renderTile } from "./lib/server/radar24";
 import { renderNowcastTile, NOWCAST_MAX_LEAD_MIN } from "./lib/server/radarNowcast";
 import { buildClutter } from "./clutter";
@@ -55,53 +56,8 @@ const readDone = async (): Promise<string[]> => {
 // "d1" in a list marks frames saved to D1; an older list (frames in Backblaze) is started afresh.
 const done = new Set(await readDone().then((l) => (process.env.MAPS_PUT_KEY && process.env.R2_ENDPOINT && !l.includes("d1") ? [] : l)));
 const exists = async (Key: string) => done.has(Key.replace(/\/\d+\/\d+\/\d+(@2x)?\.webp$/, ""));
-// Drawn pictures go to Cloudflare D1 through radar.ro-weather.app (17 Nov): Backblaze's free
-// 2,500 downloads a day ran out. Squares are packed 16x16 per row (one row per square would
-// be past D1's free 100,000 writes a day) and sent once their frame is finished (flush below).
-const PUT_KEY = process.env.MAPS_PUT_KEY;
-const useD1 = !local && !!PUT_KEY;
-const PICT = /^((?:tile|nowcast|s3)\/.+)\/(\d+)\/(\d+)\/(\d+)(@2x)?\.webp$/;
-const BLK = 16, PART_MAX = 1_800_000;
-const pending = new Map<string, Map<string, [number, number, Buffer][]>>();
-function hold(Key: string, buf: Buffer) {
-  const m = PICT.exec(Key);
-  if (!m) return false;
-  const [, g, z, xs, ys, sfx = ""] = m, x = +xs, y = +ys;
-  const blk = `${g}/${z}/${Math.floor(x / BLK)}/${Math.floor(y / BLK)}${sfx}`;
-  let gm = pending.get(g); if (!gm) pending.set(g, (gm = new Map()));
-  let sq = gm.get(blk); if (!sq) gm.set(blk, (sq = []));
-  sq.push([x, y, buf]);
-  return true;
-}
-let cleaned = false;
-async function flush(g: string) {
-  const gm = pending.get(g);
-  if (!gm) return;
-  // Kept as long as the lists offer them: radar and forecast 6 h, satellite (last 80 scans) a day.
-  const exp = Math.floor(Date.now() / 1000) + (g.startsWith("s3/") ? 26 : 7) * 3600;
-  const recs: Buffer[] = [];
-  for (const [blk, sq] of gm) {
-    let part = 0;
-    for (let i = 0; i < sq.length; ) {
-      const chunk: [number, number, Buffer][] = [];
-      let size = 0;
-      while (i < sq.length && (chunk.length === 0 || size + sq[i][2].length < PART_MAX)) { size += sq[i][2].length; chunk.push(sq[i++]); }
-      const head = Buffer.alloc(4 + chunk.length * 12);
-      head.writeUInt32BE(chunk.length, 0);
-      let off = 0;
-      chunk.forEach(([x, y, b], j) => { const o = 4 + j * 12; head.writeUInt16BE(x, o); head.writeUInt16BE(y, o + 2); head.writeUInt32BE(off, o + 4); head.writeUInt32BE(b.length, o + 8); off += b.length; });
-      const data = Buffer.concat([head, ...chunk.map((c) => c[2])]);
-      const k = Buffer.from(blk), meta = Buffer.alloc(14);
-      meta.writeUInt16BE(k.length, 0);
-      const tail = Buffer.alloc(12); tail.writeUInt32BE(part++, 0); tail.writeUInt32BE(exp, 4); tail.writeUInt32BE(data.length, 8);
-      recs.push(meta.subarray(0, 2), k, tail, data);
-    }
-  }
-  const r = await fetch(`https://radar.ro-weather.app/_put${cleaned ? "" : "?clean"}`, { method: "POST", headers: { "x-put-key": PUT_KEY! }, body: Buffer.concat(recs), signal: AbortSignal.timeout(60_000) });
-  if (!r.ok) throw new Error(`d1 put ${g} ${r.status} ${(await r.text()).slice(0, 200)}`);
-  cleaned = true;
-  pending.delete(g);
-}
+// Drawn pictures go to Cloudflare D1 through radar.ro-weather.app (see d1.ts).
+const useD1 = !local && d1On;
 const put = (Key: string, buf: Buffer, type = "image/webp") => useD1 && hold(Key, buf) ? Promise.resolve() : local ? fs.mkdir(`out/${Key.replace(/\/[^/]+$/, "")}`, { recursive: true }).then(() => fs.writeFile(`out/${Key}`, buf)) :
   s3.send(new PutObjectCommand({ Bucket, Key, Body: buf, ContentType: type, CacheControl: "public, max-age=86400, immutable" }));
 
@@ -246,7 +202,7 @@ if (doing("sat")) try {
 // Send each finished frame's pictures (unfinished ones are drawn again next run).
 for (const g of [...pending.keys()]) {
   if (!groups.has(g) || unfinished.has(g)) continue;
-  await flush(g).catch((e) => { console.warn(String(e).slice(0, 200)); unfinished.add(g); failed = true; });
+  await flush(g, 7).catch((e) => { console.warn(String(e).slice(0, 200)); unfinished.add(g); failed = true; });
 }
 // A frame counts as done only when every one of its pictures was saved; list the last 6 h
 // (the cleanup deletes older pictures, so older frames must not be offered).

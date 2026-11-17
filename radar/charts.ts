@@ -13,6 +13,7 @@
  * Space (free plan is 10 GB, shared with radar): only the run on show is kept, to +120 h;
  * older chart runs are deleted as soon as a newer one is on show (15 Nov: the cap was hit).
  */
+import { d1On, hold, flush, putFile } from "./d1";
 import { S3Client, PutObjectCommand, GetObjectCommand, ListObjectVersionsCommand, DeleteObjectsCommand } from "@aws-sdk/client-s3";
 import { kvGet, kvPut } from "./kv";
 import { latestGfsRun, GFS_LEADS, RAIN_LEADS } from "./lib/server/gfs";
@@ -30,6 +31,12 @@ const started = Date.now();
 const BUDGET = Number(process.env.CHART_BUDGET_MS ?? 240_000);
 
 const put = async (Key: string, body: Buffer | string, type: string, maxAge = 86400) => {
+  // Chart squares and line files go to D1 (17 Nov: Backblaze's free downloads ran out); the
+  // run list and done lists stay in KV as before.
+  if (!local && d1On) {
+    if (Buffer.isBuffer(body) && hold(Key, body)) return;
+    if (/^gfs\/(isobars|contours|windgrid)\//.test(Key)) return putFile(Key, body, 36);
+  }
   // The chart run and the done list go to KV too (the Worker reads them from there).
   if (!local && (Key === "gfs/meta.json" || /^done-/.test(Key))) await kvPut(Key, body);
   if (local) { await fs.mkdir(`out/${Key}`.replace(/\/[^/]+$/, ""), { recursive: true }); return void (await fs.writeFile(`out/${Key}`, body)); }
@@ -63,7 +70,9 @@ if (run == null) { console.log("no complete GFS run found"); process.exit(0); }
 type Meta = { run: number; leads: number[]; rainLeads: number[]; ready: number[]; source: string; prev?: number };
 const meta = await getJson<Meta | null>("gfs/meta.json", null);
 const DONE = `done-charts-${run}.json`;
-const done = new Set(await getJson<string[]>(DONE, []));
+// "d1" marks a list whose files are in D1; an older one (files in Backblaze) starts afresh.
+const done = new Set(await getJson<string[]>(DONE, []).then((l) => (!local && d1On && !l.includes("d1") ? [] : l)));
+if (!local && d1On) done.add("d1");
 
 let drawn = 0, failed = 0;
 const out = () => Date.now() - started > BUDGET;
@@ -103,7 +112,10 @@ for (const lead of ALL_LEADS) {
       const buf = await renderGfsTile(l, run, lead, z, x, y, 2, false);
       await put(`gfs/tile/${l}/${run}/${lead}/${z}/${x}/${y}.webp`, buf, "image/webp");
       drawn++;
-    }), 8));
+    }), 8).then(async () => {
+      if (local || !d1On || out()) return;
+      await flush(`gfs/tile/${l}/${run}/${lead}`, 36).catch((e) => { failed++; console.warn(String(e).slice(0, 160)); });
+    }));
   }
 }
 
