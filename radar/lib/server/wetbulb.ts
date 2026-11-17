@@ -1,0 +1,182 @@
+// Rain, sleet or snow for the radar, done properly (17 Nov): the WET-BULB temperature near the
+// ground (how cold falling rain or snow ends up: air temperature and humidity together), from
+// DWD's ICON-EU model (free open data, ~7 km, hourly), corrected for the real height of the ground
+// (a free 2 km height map over Great Britain and Ireland: snow sits on the fells, the valleys get
+// rain), then nudged towards what the airports report right now (METAR, every 30 min: their own
+// temperature and dew point, and whether they see snow, sleet or rain).
+//   wet-bulb ≤ 0.5 °C → snow;  ≤ 1.5 °C → sleet (mix);  above → rain.
+// Needs ecCodes' grib_get_data (installed by the GitHub job). Anything missing → null, and the
+// older GFS temperature rule is used instead.
+import { execFileSync } from "child_process";
+import { promises as fs } from "fs";
+import os from "os";
+import path from "path";
+import { loadImage, createCanvas } from "@napi-rs/canvas";
+
+const LAT0 = 29.5, LON0 = -23.5, D = 0.0625, NY = 657, NX = 1377;   // ICON-EU's regular grid
+export interface WetBulbField {
+  tw: Float32Array;          // model wet-bulb at the model's own ground height, °C
+  hs: Float32Array;          // the model's ground height, m
+  fix: { lat: number; lon: number; d: number; snow?: boolean; rain?: boolean }[];   // airport corrections
+}
+
+const GRIB = process.env.GRIB_GET_DATA || "grib_get_data";
+async function grib(url: string): Promise<Float32Array | null> {
+  const r = await fetch(url, { signal: AbortSignal.timeout(60_000) }).catch(() => null);
+  if (!r?.ok) return null;
+  const base = path.join(os.tmpdir(), `icon-${Math.random().toString(36).slice(2)}.grib2`);
+  await fs.writeFile(base + ".bz2", Buffer.from(await r.arrayBuffer()));
+  try {
+    execFileSync("bunzip2", ["-f", base + ".bz2"]);
+    const txt = execFileSync(GRIB, ["-w", "count=1", base], { maxBuffer: 400 * 1024 * 1024 }).toString();
+    const out = new Float32Array(NY * NX).fill(NaN);
+    for (const line of txt.split("\n")) {
+      const p = line.trim().split(/\s+/);
+      if (p.length < 3) continue;
+      const la = +p[0], lo = +p[1], v = +p[2];
+      const y = Math.round((la - LAT0) / D), x = Math.round((lo - LON0) / D);
+      if (y >= 0 && y < NY && x >= 0 && x < NX && Number.isFinite(v)) out[y * NX + x] = v;
+    }
+    return out;
+  } catch (e) {
+    console.warn("[wetbulb] grib", String(e).slice(0, 160));
+    return null;
+  } finally {
+    await fs.unlink(base).catch(() => {});
+  }
+}
+
+/** Wet-bulb °C from air temperature and dew point (°C), Stull 2011 via relative humidity. */
+export function wetBulb(t: number, td: number): number {
+  const es = (x: number) => 6.112 * Math.exp((17.62 * x) / (243.12 + x));
+  const rh = Math.max(1, Math.min(100, (100 * es(td)) / es(t)));
+  return t * Math.atan(0.151977 * Math.sqrt(rh + 8.313659)) + Math.atan(t + rh) - Math.atan(rh - 1.676331)
+    + 0.00391838 * rh ** 1.5 * Math.atan(0.023101 * rh) - 4.686035;
+}
+
+// --- The ground: AWS's free Terrarium height tiles at zoom 6 (~2.4 km), GB and Ireland.
+let dem: { z: number; x0: number; y0: number; nx: number; ny: number; h: Float32Array } | null = null;
+let demLoading: Promise<void> | null = null;
+async function loadDem() {
+  const z = 6, x0 = 29, x1 = 32, y0 = 18, y1 = 22, nx = (x1 - x0 + 1) * 256, ny = (y1 - y0 + 1) * 256;
+  const h = new Float32Array(nx * ny).fill(NaN);
+  await Promise.all(Array.from({ length: (x1 - x0 + 1) * (y1 - y0 + 1) }, async (_, i) => {
+    const tx = x0 + (i % (x1 - x0 + 1)), ty = y0 + Math.floor(i / (x1 - x0 + 1));
+    const r = await fetch(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${tx}/${ty}.png`, { signal: AbortSignal.timeout(30_000) }).catch(() => null);
+    if (!r?.ok) return;
+    const img = await loadImage(Buffer.from(await r.arrayBuffer()));
+    const c = createCanvas(256, 256), cx = c.getContext("2d");
+    cx.drawImage(img, 0, 0);
+    const data = cx.getImageData(0, 0, 256, 256).data;
+    for (let py = 0; py < 256; py++) for (let px = 0; px < 256; px++) {
+      const o = (py * 256 + px) * 4;
+      h[((ty - y0) * 256 + py) * nx + (tx - x0) * 256 + px] = data[o] * 256 + data[o + 1] + data[o + 2] / 256 - 32768;
+    }
+  }));
+  dem = { z, x0, y0, nx, ny, h };
+}
+function groundAt(lat: number, lon: number): number {
+  if (!dem) return NaN;
+  const n = 2 ** dem.z * 256;
+  const px = ((lon + 180) / 360) * n - dem.x0 * 256;
+  const r = (lat * Math.PI) / 180, py = ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * n - dem.y0 * 256;
+  const ix = Math.round(px), iy = Math.round(py);
+  if (ix < 0 || iy < 0 || ix >= dem.nx || iy >= dem.ny) return NaN;
+  const v = dem.h[iy * dem.nx + ix];
+  return v < -50 ? 0 : v;   // sea
+}
+
+function sample(a: Float32Array, lat: number, lon: number): number {
+  const fy = (lat - LAT0) / D, fx = (lon - LON0) / D;
+  const y = Math.floor(fy), x = Math.floor(fx), ty = fy - y, tx = fx - x;
+  if (y < 0 || x < 0 || y >= NY - 1 || x >= NX - 1) return NaN;
+  const v = (j: number, i: number) => a[(y + j) * NX + x + i];
+  return (v(0, 0) * (1 - tx) + v(0, 1) * tx) * (1 - ty) + (v(1, 0) * (1 - tx) + v(1, 1) * tx) * ty;
+}
+
+/** Wet-bulb lapse with height: ~5 °C per km (between the dry and moist rates). */
+const LAPSE = 0.005;
+function rawTw(f: WetBulbField, lat: number, lon: number): number {
+  const tw = sample(f.tw, lat, lon);
+  if (!Number.isFinite(tw)) return NaN;
+  const g = groundAt(lat, lon), hs = sample(f.hs, lat, lon);
+  return Number.isFinite(g) && Number.isFinite(hs) ? tw - LAPSE * (g - hs) : tw;
+}
+
+/** Wet-bulb here, height-corrected and nudged by nearby airports (within ~40 km, fading out). */
+export function wetBulbAt(f: WetBulbField, lat: number, lon: number): number {
+  let tw = rawTw(f, lat, lon);
+  if (!Number.isFinite(tw)) return NaN;
+  let wsum = 0, dsum = 0, snow = 0, rain = 0;
+  for (const s of f.fix) {
+    const dy = (lat - s.lat) * 111, dx = (lon - s.lon) * 111 * Math.cos((lat * Math.PI) / 180);
+    const d2 = dx * dx + dy * dy;
+    if (d2 > 60 * 60) continue;
+    const w = Math.exp(-d2 / (2 * 22 * 22));
+    wsum += w; dsum += w * s.d;
+    if (s.snow) snow += w; if (s.rain) rain += w;
+  }
+  if (wsum > 0) tw += (dsum / wsum) * Math.min(1, wsum);
+  // An airport seeing snow keeps it snow close by; seeing rain keeps it rain.
+  if (snow > 0.3) tw = Math.min(tw, 0.4);
+  else if (rain > 0.3 && tw < 1.6) tw = Math.max(tw, 1.6);
+  return tw;
+}
+
+// --- Loading, per hour (the newest ICON-EU run that has it), kept in memory.
+const cache = new Map<number, WetBulbField | "loading" | "none">();
+const stampOf = (run: Date) => `${run.getUTCFullYear()}${String(run.getUTCMonth() + 1).padStart(2, "0")}${String(run.getUTCDate()).padStart(2, "0")}${String(run.getUTCHours()).padStart(2, "0")}`;
+async function load(hour: number): Promise<WetBulbField | null> {
+  if (!demLoading) demLoading = loadDem().catch(() => {});
+  const t = hour * 3_600_000;
+  for (let back = 3; back <= 18; back += 3) {
+    const run = new Date(Math.floor((Date.now() - back * 3_600_000) / 10_800_000) * 10_800_000);
+    const step = Math.round((t - run.getTime()) / 3_600_000);
+    if (step < 0 || step > 120) continue;
+    const rh = String(run.getUTCHours()).padStart(2, "0"), st = stampOf(run), ss = String(step).padStart(3, "0");
+    const u = (v: string, V: string) => `https://opendata.dwd.de/weather/nwp/icon-eu/grib/${rh}/${v}/icon-eu_europe_regular-lat-lon_single-level_${st}_${ss}_${V}.grib2.bz2`;
+    const [t2, td] = await Promise.all([grib(u("t_2m", "T_2M")), grib(u("td_2m", "TD_2M"))]);
+    if (!t2 || !td) continue;
+    const hs = await grib(`https://opendata.dwd.de/weather/nwp/icon-eu/grib/${rh}/hsurf/icon-eu_europe_regular-lat-lon_time-invariant_${st}_HSURF.grib2.bz2`);
+    const tw = new Float32Array(NY * NX);
+    for (let i = 0; i < tw.length; i++) tw[i] = wetBulb(t2[i] - 273.15, td[i] - 273.15);
+    const f: WetBulbField = { tw, hs: hs ?? new Float32Array(NY * NX).fill(NaN), fix: [] };
+    await demLoading;
+    f.fix = await airports(f, t);
+    console.log(`[wetbulb] ICON-EU ${st}+${ss} for ${new Date(t).toISOString()}, ${f.fix.length} airports`);
+    return f;
+  }
+  return null;
+}
+
+/** Airports' own wet-bulb against the model's there (only for times within the last 2 hours). */
+async function airports(f: WetBulbField, t: number) {
+  if (Date.now() - t > 2 * 3_600_000) return [];
+  const j = await fetch("https://aviationweather.gov/api/data/metar?bbox=35,-25,71,45&format=json", { signal: AbortSignal.timeout(20_000) })
+    .then((r) => (r.ok ? r.json() : [])).catch(() => []) as any[];
+  const out: WetBulbField["fix"] = [];
+  for (const m of j) {
+    if (typeof m?.lat !== "number" || typeof m?.temp !== "number" || typeof m?.dewp !== "number") continue;
+    if (Math.abs((m.obsTime ?? 0) * 1000 - t) > 90 * 60_000) continue;
+    const model = rawTw(f, m.lat, m.lon);
+    if (!Number.isFinite(model)) continue;
+    const obs = wetBulb(m.temp, m.dewp);
+    const wx = String(m.wxString ?? "");
+    out.push({ lat: m.lat, lon: m.lon, d: Math.max(-3, Math.min(3, obs - model)),
+      snow: /(^|\s)[-+]?(SN|SHSN|BLSN|SG)/.test(wx) && !/RA/.test(wx), rain: /(^|\s)[-+]?(RA|SHRA|DZ)/.test(wx) && !/SN|PL|FZ/.test(wx) });
+  }
+  return out;
+}
+
+/** The field for time t if ready; else null and loading starts (never blocks a tile). */
+export function wetBulbNow(t: number): WetBulbField | null {
+  const hour = Math.round(t / 3_600_000);
+  const c = cache.get(hour);
+  if (c && c !== "loading" && c !== "none") return c;
+  if (c === "none" || c === "loading") return null;
+  cache.set(hour, "loading");
+  load(hour).then((f) => { cache.set(hour, f ?? "none"); while (cache.size > 8) cache.delete(cache.keys().next().value!); })
+    .catch(() => cache.set(hour, "none"));
+  return null;
+}
+export const wetBulbSettled = (t: number) => { const c = cache.get(Math.round(t / 3_600_000)); return c !== undefined && c !== "loading"; };

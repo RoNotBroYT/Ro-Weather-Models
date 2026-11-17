@@ -26,6 +26,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install
+      # ecCodes reads DWD's ICON-EU files (rain / sleet / snow by wet-bulb, see lib/server/wetbulb.ts).
+      - if: matrix.part == 'radar' || matrix.part == 'forecast'
+        run: sudo apt-get install -y -qq libeccodes-tools > /dev/null
       - name: Draw and upload
         env:
           # Backblaze B2 (free, no card): uploads cost nothing.

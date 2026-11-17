@@ -13,6 +13,7 @@
 
 import { mixLut, snowLut } from "../radarColours";
 import { GFS_LEADS, gfsLayer, latestGfsRun, sampleGlobalSmooth, type GlobalGrid } from "./gfs";
+import { wetBulbAt, wetBulbNow, wetBulbSettled, type WetBulbField } from "./wetbulb";
 
 export const RAIN = 0;
 export const MIX = 1;
@@ -21,6 +22,8 @@ export const SNOW = 2;
 export interface PrecipField {
   t2: GlobalGrid;
   t850: GlobalGrid | null;
+  /** ICON-EU wet-bulb, height-corrected, airport-nudged (see wetbulb.ts); the GFS rule elsewhere. */
+  wb?: WetBulbField | null;
 }
 
 type G = { __ptype?: Map<string, PrecipField | "loading">; __ptypeRun?: { at: number; run: number | null; loading?: boolean } };
@@ -47,10 +50,12 @@ function refreshRun() {
 /** The temperature field for time t, waiting up to `ms` for it to load (a tile
  *  drawn without it shows snow as rain, and cuts snow off at the tile edges). */
 export async function precipFieldWait(t: number, ms = 4000): Promise<PrecipField | null> {
-  const end = Date.now() + ms;
+  const end = Date.now() + Math.max(ms, 90_000);   // the ICON files take a little while the first time
   for (;;) {
     const f = precipFieldNow(t);
-    if (f || Date.now() >= end) return f;
+    wetBulbNow(t);
+    if (f && (wetBulbSettled(t) || Date.now() >= end)) return { ...f, wb: wetBulbNow(t) };
+    if (Date.now() >= end) return f;
     await new Promise((r) => setTimeout(r, 150));
   }
 }
@@ -82,6 +87,10 @@ export function precipFieldNow(t: number): PrecipField | null {
 }
 
 export function precipTypeAt(f: PrecipField, lat: number, lon: number): number {
+  if (f.wb) {
+    const tw = wetBulbAt(f.wb, lat, lon);
+    if (Number.isFinite(tw)) return tw <= 0.5 ? SNOW : tw <= 1.5 ? MIX : RAIN;
+  }
   // Smooth (not nearest-cell) sampling: the 0.5° grid otherwise shows as squares at the snow line.
   const t2 = sampleGlobalSmooth(f.t2, lat, lon);
   if (!Number.isFinite(t2)) return RAIN;
