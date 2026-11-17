@@ -26,6 +26,21 @@ const rec = (k: string, part: number, exp: number, data: Buffer) => {
 };
 let cleaned = false;
 async function send(recs: Buffer[], what: string) {
+  // At most ~6 MB a request (big satellite frames were turned away whole), each tried 3 times.
+  const MAX = 6_000_000;
+  for (let i = 0; i < recs.length; ) {
+    const part: Buffer[] = [];
+    let size = 0;
+    while (i < recs.length && (part.length === 0 || size + recs[i].length + recs[i + 1].length + recs[i + 2].length + recs[i + 3].length < MAX)) {
+      for (let k = 0; k < 4; k++) { size += recs[i].length; part.push(recs[i++]); }
+    }
+    for (let a = 1; ; a++) {
+      try { await sendOne(part, what); break; }
+      catch (e) { if (a >= 3) throw e; await new Promise((r) => setTimeout(r, 2000 * a)); }
+    }
+  }
+}
+async function sendOne(recs: Buffer[], what: string) {
   const r = await fetch(`https://radar.ro-weather.app/_put${cleaned ? "" : "?clean"}`, { method: "POST", headers: { "x-put-key": PUT_KEY! }, body: Buffer.concat(recs), signal: AbortSignal.timeout(60_000) });
   if (!r.ok) throw new Error(`d1 put ${what} ${r.status} ${(await r.text()).slice(0, 200)}`);
   cleaned = true;
