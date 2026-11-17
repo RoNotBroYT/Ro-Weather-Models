@@ -14,3 +14,10 @@ custom_domain = true
 [[kv_namespaces]]
 binding = "LISTS"
 id = "c2451b6d00b548f78618402535d577f0"
+
+# The drawn map pictures (radar, forecast, satellite), packed 16x16 squares per row (17 Nov):
+# Backblaze's free 2,500 downloads a day ran out. D1 free: 5 M rows read, 100 k written a day.
+[[d1_databases]]
+binding = "DB"
+database_name = "ro-weather-tiles"
+database_id = "8b12e116-2b44-45f2-a36a-cd730077bcf4"

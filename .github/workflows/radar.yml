@@ -36,6 +36,7 @@ jobs:
           R2_BUCKET: ro-weather-maps
           PART: ${{ matrix.part }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          MAPS_PUT_KEY: ${{ secrets.MAPS_PUT_KEY }}
           CF_ACCOUNT_ID: dedc07a5683632eda32bc8dccda3ed43
           CF_KV_NS: c2451b6d00b548f78618402535d577f0
           RW_PATIENT: "1"
