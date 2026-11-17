@@ -123,7 +123,7 @@ export default {
       if (row) {
         // Live lightning changes every 20 s, its list every 5 min; the rest never changes.
         const age = key === "lightning/live.json" ? "public, max-age=15" : key === "lightning/index.json" ? "public, max-age=60" : "public, max-age=86400, immutable";
-        res = new Response(row.data, { status: 200, headers: { "Access-Control-Allow-Origin": "*", "Cache-Control": age, "Content-Type": "application/json" } });
+        res = new Response(new Uint8Array(row.data), { status: 200, headers: { "Access-Control-Allow-Origin": "*", "Cache-Control": age, "Content-Type": "application/json" } });
         ctx.waitUntil(cache.put(cacheKey, res.clone()));
         return res;
       }
