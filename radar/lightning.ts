@@ -10,6 +10,7 @@ import { promises as fsp } from "fs";
 import os from "os";
 import path from "path";
 import { mtgFlashes } from "./mtg";
+import { placeFlashes } from "./placeFlash";
 
 export type Flash = [number, number, number, number];
 /** Each satellite keeps the flashes nearer its own longitude (where both see one, once only). */
@@ -112,7 +113,8 @@ export async function saveLightning(
   for (let t = newest; t > newest - 24 * 3_600_000; t -= STEP) {
     if (have.has(t)) continue;
     if (Date.now() - started > budgetMs) break;
-    const f = await allFlashes(t, t + STEP);
+    // Placed where the storm's physics says each flash most likely was (placeFlash.ts).
+    const f = await placeFlashes(await allFlashes(t, t + STEP));
     // [lon, lat, seconds into the piece, strength 0–3] — small enough to fetch a day of.
     const rows = f.map((x) => [+x.lon.toFixed(3), +x.lat.toFixed(3), Math.max(0, Math.round((x.t - t) / 1000)), Math.max(0, Math.min(3, Math.round(Math.log10(Math.max(x.e, 1e-16)) + 15)))]);
     await put(`lightning/${t}.json`, JSON.stringify(rows), 86_400);
@@ -139,7 +141,7 @@ export async function liveLightning(
   let writes = 0;
   while (Date.now() < untilMs) {
     const now = Date.now();
-    const got = await allFlashes(upTo, now).catch(() => []);
+    const got = await allFlashes(upTo, now).then(placeFlashes).catch(() => []);
     if (got.length) upTo = Math.max(upTo, ...got.map((f) => f.t)) + 1;
     flashes = [...flashes, ...got].filter((f) => f.t > now - 10 * 60_000);
     const rows = flashes.map((x) => [+x.lon.toFixed(3), +x.lat.toFixed(3), Math.max(0, Math.round((now - x.t) / 1000)), Math.max(0, Math.min(3, Math.round(Math.log10(Math.max(x.e, 1e-16)) + 15)))]);
