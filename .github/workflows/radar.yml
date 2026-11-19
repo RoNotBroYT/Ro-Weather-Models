@@ -49,4 +49,8 @@ jobs:
           EUMETSAT_KEY: ${{ secrets.EUMETSAT_KEY }}
           EUMETSAT_SECRET: ${{ secrets.EUMETSAT_SECRET }}
         run: if [ "$PART" = charts ]; then bun charts.ts; else bun predraw.ts; fi
-
+      # Keep the site's next-hour rain service warm (owner, 19 Nov: the app's rain card waited 6 s
+      # after a quiet spell; warm, it answers in about 0.5 s). One small request every 5 minutes.
+      - if: matrix.part == 'radar'
+        working-directory: .
+        run: curl -s -o /dev/null -m 20 "https://www.ro-weather.app/api/rain-minute?lat=51.50&lon=-0.12" || true
