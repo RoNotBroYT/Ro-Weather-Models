@@ -97,6 +97,15 @@ async function store(req, env) {
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
+    // Free-limit check (radar/health.ts): each shard's size, from D1's own answer.
+    if (url.pathname === "/_health") {
+      if (!env.PUT_KEY || req.headers.get("x-put-key") !== env.PUT_KEY) return new Response("no", { status: 403 });
+      const dbs = [...ALL(env), env.DB].filter(Boolean);
+      const sizes = await Promise.all(dbs.map(async (db) => {
+        try { const r = await db.prepare("SELECT 1").run(); return r.meta?.size_after ?? null; } catch { return null; }
+      }));
+      return Response.json({ sizes });
+    }
     if (req.method === "POST" && url.pathname === "/_put") return store(req, env).catch((e) => new Response("store failed: " + String(e?.message ?? e).slice(0, 300), { status: 500 }));
     if (req.method !== "GET" && req.method !== "HEAD") return new Response("no", { status: 405 });
     const key = decodeURIComponent(url.pathname.slice(1));

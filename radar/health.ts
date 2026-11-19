@@ -4,7 +4,6 @@
 //   - each D1 shard (500 MB free each): above 70% delete expired rows; above 85% warn
 //   - Workers requests today (100,000 a day free): above 70% warn
 //   - Backblaze bucket (10 GB free): above 75% warn
-import { readFileSync } from "node:fs";
 import { S3Client, ListObjectsV2Command } from "@aws-sdk/client-s3";
 
 const ACC = process.env.CF_ACCOUNT_ID!, TOKEN = process.env.CF_API_TOKEN!;
@@ -15,22 +14,22 @@ const cf = async (path: string, init: RequestInit = {}) => {
 const warnings: string[] = [];
 const line = (s: string) => console.log(s);
 
-// D1 shards, from the worker's own settings.
-const ids = [...readFileSync(new URL("../maps-worker/wrangler.toml", import.meta.url), "utf8").matchAll(/database_id = "([0-9a-f-]+)"/g)].map((m) => m[1]);
+// D1 shards: sizes from the radar worker itself (our API key can't read D1). Above 70% the worker's
+// own clean route deletes expired rows on every shard.
 const D1_MAX = 500 * 1024 * 1024;
-for (const id of ids) {
-  const j = await cf(`/accounts/${ACC}/d1/database/${id}`);
-  const size = j?.result?.file_size ?? 0, name = j?.result?.name ?? id;
-  let pct = Math.round((size / D1_MAX) * 100);
-  if (pct >= 70) {
-    const now = Math.floor(Date.now() / 1000);
-    await cf(`/accounts/${ACC}/d1/database/${id}/query`, { method: "POST", body: JSON.stringify({ sql: "DELETE FROM tiles WHERE exp < ?", params: [now] }) });
-    const after = (await cf(`/accounts/${ACC}/d1/database/${id}`))?.result?.file_size ?? size;
-    line(`${name}: ${pct}% -> cleaned expired rows -> ${Math.round((after / D1_MAX) * 100)}%`);
-    pct = Math.round((after / D1_MAX) * 100);
-  } else line(`${name}: ${pct}%`);
-  if (pct >= 85) warnings.push(`D1 ${name} at ${pct}% of 500 MB even after clean-up`);
+const health = async () => (await (await fetch("https://radar.ro-weather.app/_health", { headers: { "x-put-key": process.env.MAPS_PUT_KEY! } })).json()) as { sizes: (number | null)[] };
+let { sizes } = await health();
+if (sizes.some((x) => x != null && x / D1_MAX >= 0.7)) {
+  await fetch("https://radar.ro-weather.app/_put?clean=1", { method: "POST", headers: { "x-put-key": process.env.MAPS_PUT_KEY!, "content-type": "application/octet-stream" }, body: new Uint8Array(0) }).catch(() => null);
+  line("A shard passed 70%: asked the worker to delete expired rows");
+  ({ sizes } = await health());
 }
+sizes.forEach((x, i) => {
+  if (x == null) { warnings.push(`D1 shard ${i}: size could not be read`); return; }
+  const pct = Math.round((x / D1_MAX) * 100);
+  line(`D1 shard ${i}: ${(x / 1e6).toFixed(0)} MB (${pct}%)`);
+  if (pct >= 85) warnings.push(`D1 shard ${i} at ${pct}% of 500 MB even after clean-up`);
+});
 
 // Workers requests so far today (UTC), all workers on the account.
 try {
@@ -42,7 +41,7 @@ try {
   const pct = Math.round((req / 100_000) * 100);
   line(`Workers requests today: ${req} (${pct}% of 100,000)`);
   if (pct >= 70) warnings.push(`Workers at ${pct}% of the free 100,000 requests today`);
-  if (r?.errors?.length) line(`(analytics: ${String(r.errors[0]?.message).slice(0, 120)})`);
+  if (r?.errors?.length) line(`Workers requests: not readable with this key (${String(r.errors[0]?.message).slice(0, 80)}); the owner can add "Account Analytics: Read" to CF_API_TOKEN`);
 } catch (e) { line(`Workers requests: could not read (${String(e).slice(0, 100)})`); }
 
 // Backblaze bucket size.
