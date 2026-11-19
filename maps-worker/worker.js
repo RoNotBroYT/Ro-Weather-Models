@@ -109,11 +109,13 @@ export default {
           // ?trim: a shard over 75% loses its soonest-to-expire rows (oldest frames, going soon anyway)
           // in rounds until under 70%, so it never reaches "full". Freed space is re-used at once.
           if (url.searchParams.has("trim") && file != null) {
-            for (let k = 0; k < 8 && file / (500 * 1024 * 1024) > 0.75; k++) {
-              const d = await db.prepare("DELETE FROM tiles WHERE rowid IN (SELECT rowid FROM tiles ORDER BY exp LIMIT 1500)").run();
-              file = d.meta?.size_after ?? file;
-              if (!d.meta?.changes) break;
-            }
+            try {
+              for (let k = 0; k < 12 && file / (500 * 1024 * 1024) > 0.75; k++) {
+                const d = await db.prepare("DELETE FROM tiles WHERE rowid IN (SELECT rowid FROM tiles ORDER BY exp LIMIT 200)").run();
+                file = d.meta?.size_after ?? file;
+                if (!d.meta?.changes) break;
+              }
+            } catch (e) { return { file, free: null, trimError: String(e?.message ?? e).slice(0, 160) }; }
           }
           return { file, free: null };
         } catch { return null; }

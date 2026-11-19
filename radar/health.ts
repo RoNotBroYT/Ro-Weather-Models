@@ -19,7 +19,7 @@ const line = (s: string) => console.log(s);
 const D1_MAX = 500 * 1024 * 1024;
 const health = async (trim = false) => {
   const j = (await (await fetch("https://radar.ro-weather.app/_health" + (trim ? "?trim=1" : ""), { headers: { "x-put-key": process.env.MAPS_PUT_KEY! } })).json()) as { sizes: ({ file: number | null; free: number | null } | null)[] };
-  for (const x of j.sizes) if (x) line(`  raw: file ${((x.file ?? 0) / 1e6).toFixed(0)} MB, freed inside ${x.free == null ? "?" : (x.free / 1e6).toFixed(0)} MB`);
+  j.sizes.forEach((x: any, i) => { if (x?.trimError) line(`  shard ${i} trim: ${x.trimError}`); });
   // In use = the file minus pages SQLite freed (it re-uses those before growing).
   return { sizes: j.sizes.map((x) => (x && x.file != null ? x.file - (x.free ?? 0) : null)) };
 };
