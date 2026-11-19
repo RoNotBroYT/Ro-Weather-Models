@@ -235,11 +235,11 @@ export function lonLatToGrid(lon: number, lat: number, g: LaeaGrid): { col: numb
  * textbook scale would suggest.
  */
 const STOPS: { dbz: number; rgb: [number, number, number] }[] = [
-  { dbz: 5, rgb: [70, 130, 235] },
-  { dbz: 15, rgb: [30, 95, 215] },
-  { dbz: 23, rgb: [15, 70, 175] },
-  { dbz: 30, rgb: [5, 50, 135] },
-  { dbz: 34, rgb: [0, 40, 105] },
+  { dbz: 5, rgb: [136, 221, 238] },
+  { dbz: 15, rgb: [0, 163, 224] },
+  { dbz: 23, rgb: [0, 119, 170] },
+  { dbz: 30, rgb: [0, 85, 136] },
+  { dbz: 34, rgb: [0, 71, 104] },
   { dbz: 35, rgb: [255, 238, 0] },
   { dbz: 40, rgb: [255, 170, 0] },
   { dbz: 45, rgb: [255, 68, 0] },
