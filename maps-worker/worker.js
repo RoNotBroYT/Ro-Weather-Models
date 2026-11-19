@@ -111,7 +111,7 @@ export default {
           if (url.searchParams.has("trim") && file != null) {
             try {
               for (let k = 0; k < 12 && file / (500 * 1024 * 1024) > 0.75; k++) {
-                const d = await db.prepare("DELETE FROM tiles WHERE rowid IN (SELECT rowid FROM tiles ORDER BY exp LIMIT 200)").run();
+                const d = await db.prepare("DELETE FROM tiles WHERE k IN (SELECT k FROM tiles ORDER BY exp ASC LIMIT 200)").run();
                 file = d.meta?.size_after ?? file;
                 if (!d.meta?.changes) break;
               }
