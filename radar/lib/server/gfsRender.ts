@@ -199,6 +199,24 @@ function smooth(pts: [number, number][], closed: boolean): [number, number][] {
  * area does not sprout a scatter of meaningless letters. Polar rows (beyond
  * ±80°) are left out: Mercator cannot draw them.
  */
+/** Drop points that bend the line by less than `tol` degrees (Douglas-Peucker): about half the
+ *  points of a smoothed isobar, invisible on the map (19 Nov: files had to shrink for weak signal). */
+function simplify(pts: [number, number][], tol: number): [number, number][] {
+  if (pts.length < 4) return pts;
+  const keep = new Uint8Array(pts.length); keep[0] = keep[pts.length - 1] = 1;
+  const stack: [number, number][] = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop()!; let best = -1, far = tol;
+    const [x1, y1] = pts[a], [x2, y2] = pts[b], dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy) || 1e-9;
+    for (let i = a + 1; i < b; i++) {
+      const d = Math.abs(dy * pts[i][0] - dx * pts[i][1] + x2 * y1 - y2 * x1) / len;
+      if (d > far) { far = d; best = i; }
+    }
+    if (best > 0) { keep[best] = 1; stack.push([a, best], [best, b]); }
+  }
+  return pts.filter((_, i) => keep[i]).map(([x, y]) => [Math.round(x * 100) / 100, Math.round(y * 100) / 100]);
+}
+
 export async function gfsIsobars(run: number, lead: number): Promise<GeoJSON.FeatureCollection> {
   const f = await gfsLayer(run, lead, "pressure");
   const cols = 361, rows = 161; // lon −180..180, lat 80..−80, 1°
@@ -218,7 +236,7 @@ export async function gfsIsobars(run: number, lead: number): Promise<GeoJSON.Fea
     features.push({
       type: "Feature",
       properties: { kind: "isobar", level: Math.round(line.level), label: String(Math.round(line.level)) },
-      geometry: { type: "LineString", coordinates: smooth(pts, closed) },
+      geometry: { type: "LineString", coordinates: simplify(smooth(pts, closed), 0.06) },
     });
   }
   const R = 8;
