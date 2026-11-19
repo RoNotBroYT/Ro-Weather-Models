@@ -74,10 +74,18 @@ async function store(req, env) {
   for (const r of rows) { const db = shard(env, r[0]); if (!per.has(db)) per.set(db, []); per.get(db).push(r); }
   for (const [db, rs] of per) {
     const keys = [...new Set(rs.map((r) => r[0]))];
-    await db.batch([
+    const write = () => db.batch([
       ...keys.map((k) => db.prepare("DELETE FROM tiles WHERE k = ?").bind(k)),
       ...rs.map(([k, part, exp, d]) => db.prepare("INSERT OR REPLACE INTO tiles (k, part, exp, data) VALUES (?, ?, ?, ?)").bind(k, part, exp, d)),
     ]);
+    try { await write(); }
+    catch (e) {
+      // A full database (500 MB free limit) stopped the radar on 19 Nov 2026: make room by dropping
+      // the rows closest to expiring (throwaway copies, redrawn when needed), then retry.
+      if (!/maximum DB size/i.test(String(e?.message ?? e))) throw e;
+      await db.prepare("DELETE FROM tiles WHERE k IN (SELECT k FROM tiles ORDER BY exp ASC LIMIT 400)").run();
+      await write();
+    }
   }
   if (new URL(req.url).searchParams.has("clean")) {
     const now = Math.floor(Date.now() / 1000);
