@@ -316,13 +316,16 @@ export async function gfsPoint(run: number, lead: number, lat: number, lon: numb
  */
 export async function gfsWindGrid(run: number, lead: number) {
   const [u, v] = await gfsWindUV(run, lead);
+  // 2 m temperature on the same grid (19 Nov): the app's radar shows it as numbers at places.
+  const t2 = await gfsLayer(run, lead, "temperature").catch(() => null);
   const nx = 360, ny = 171;
-  const U = new Int16Array(nx * ny), V = new Int16Array(nx * ny);
+  const U = new Int16Array(nx * ny), V = new Int16Array(nx * ny), TT = new Int16Array(nx * ny);
   for (let j = 0; j < ny; j++)
     for (let i = 0; i < nx; i++) {
       const lat = 85 - j, lon = -180 + i;
       U[j * nx + i] = Math.round(sampleGlobal(u, lat, lon) * 10);
       V[j * nx + i] = Math.round(sampleGlobal(v, lat, lon) * 10);
+      if (t2) TT[j * nx + i] = Math.round(sampleGlobal(t2, lat, lon) * 10);
     }
   return {
     lat0: 85,
@@ -333,6 +336,7 @@ export async function gfsWindGrid(run: number, lead: number) {
     scale: 10,
     u: Buffer.from(U.buffer).toString("base64"),
     v: Buffer.from(V.buffer).toString("base64"),
+    ...(t2 ? { t: Buffer.from(TT.buffer).toString("base64") } : {}),
   };
 }
 
