@@ -105,10 +105,17 @@ export default {
         try {
           const r = await db.prepare("SELECT 1").run();
           // Space really in use: the file minus pages SQLite has freed (re-used before it grows).
-          let free = null;
-          try { const f = await db.prepare("PRAGMA freelist_count").first(); const ps = await db.prepare("PRAGMA page_size").first();
-                free = Number(Object.values(f)[0]) * Number(Object.values(ps)[0]); } catch {}
-          return { file: r.meta?.size_after ?? null, free };
+          let file = r.meta?.size_after ?? null;
+          // ?trim: a shard over 75% loses its soonest-to-expire rows (oldest frames, going soon anyway)
+          // in rounds until under 70%, so it never reaches "full". Freed space is re-used at once.
+          if (url.searchParams.has("trim") && file != null) {
+            for (let k = 0; k < 8 && file / (500 * 1024 * 1024) > 0.75; k++) {
+              const d = await db.prepare("DELETE FROM tiles WHERE rowid IN (SELECT rowid FROM tiles ORDER BY exp LIMIT 1500)").run();
+              file = d.meta?.size_after ?? file;
+              if (!d.meta?.changes) break;
+            }
+          }
+          return { file, free: null };
         } catch { return null; }
       }));
       return Response.json({ sizes });

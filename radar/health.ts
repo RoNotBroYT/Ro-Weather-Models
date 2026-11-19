@@ -17,8 +17,8 @@ const line = (s: string) => console.log(s);
 // D1 shards: sizes from the radar worker itself (our API key can't read D1). Above 70% the worker's
 // own clean route deletes expired rows on every shard.
 const D1_MAX = 500 * 1024 * 1024;
-const health = async () => {
-  const j = (await (await fetch("https://radar.ro-weather.app/_health", { headers: { "x-put-key": process.env.MAPS_PUT_KEY! } })).json()) as { sizes: ({ file: number | null; free: number | null } | null)[] };
+const health = async (trim = false) => {
+  const j = (await (await fetch("https://radar.ro-weather.app/_health" + (trim ? "?trim=1" : ""), { headers: { "x-put-key": process.env.MAPS_PUT_KEY! } })).json()) as { sizes: ({ file: number | null; free: number | null } | null)[] };
   for (const x of j.sizes) if (x) line(`  raw: file ${((x.file ?? 0) / 1e6).toFixed(0)} MB, freed inside ${x.free == null ? "?" : (x.free / 1e6).toFixed(0)} MB`);
   // In use = the file minus pages SQLite freed (it re-uses those before growing).
   return { sizes: j.sizes.map((x) => (x && x.file != null ? x.file - (x.free ?? 0) : null)) };
@@ -27,7 +27,7 @@ let { sizes } = await health();
 if (sizes.some((x) => x != null && x / D1_MAX >= 0.7)) {
   await fetch("https://radar.ro-weather.app/_put?clean=1", { method: "POST", headers: { "x-put-key": process.env.MAPS_PUT_KEY!, "content-type": "application/octet-stream" }, body: new Uint8Array(0) }).catch(() => null);
   line("A shard passed 70%: asked the worker to delete expired rows");
-  ({ sizes } = await health());
+  ({ sizes } = await health(true));   // and trim any still over 75%
 }
 sizes.forEach((x, i) => {
   if (x == null) { warnings.push(`D1 shard ${i}: size could not be read`); return; }
