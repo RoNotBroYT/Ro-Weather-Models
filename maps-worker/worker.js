@@ -102,7 +102,14 @@ export default {
       if (!env.PUT_KEY || req.headers.get("x-put-key") !== env.PUT_KEY) return new Response("no", { status: 403 });
       const dbs = [...ALL(env), env.DB].filter(Boolean);
       const sizes = await Promise.all(dbs.map(async (db) => {
-        try { const r = await db.prepare("SELECT 1").run(); return r.meta?.size_after ?? null; } catch { return null; }
+        try {
+          const r = await db.prepare("SELECT 1").run();
+          // Space really in use: the file minus pages SQLite has freed (re-used before it grows).
+          let free = null;
+          try { const f = await db.prepare("PRAGMA freelist_count").first(); const ps = await db.prepare("PRAGMA page_size").first();
+                free = Number(Object.values(f)[0]) * Number(Object.values(ps)[0]); } catch {}
+          return { file: r.meta?.size_after ?? null, free };
+        } catch { return null; }
       }));
       return Response.json({ sizes });
     }
