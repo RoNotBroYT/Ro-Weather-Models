@@ -7,14 +7,15 @@
 export type Stop = { dbz: number; rgb: [number, number, number] };
 // Snow and mix use colours the rain scale never does (it ends in pink/magenta
 // for very heavy rain): white and grey for snow, purple for heavy snow and mix.
-// Snow: white → light grey → lilac for heavy.
+// Snow (owner, 19 Nov): light blue -> cyan -> white. Rain now starts at mid blue, so pale
+// blue, cyan and white mean snow only.
 export const SNOW_STOPS: Stop[] = [
-  { dbz: 5, rgb: [215, 218, 226] },
-  { dbz: 15, rgb: [236, 238, 244] },
-  { dbz: 25, rgb: [255, 255, 255] },
-  { dbz: 32, rgb: [200, 200, 212] },
-  { dbz: 40, rgb: [190, 165, 235] },
-  { dbz: 50, rgb: [150, 110, 225] },
+  { dbz: 5, rgb: [175, 205, 255] },
+  { dbz: 15, rgb: [140, 215, 255] },
+  { dbz: 25, rgb: [90, 230, 255] },
+  { dbz: 32, rgb: [170, 245, 255] },
+  { dbz: 40, rgb: [235, 252, 255] },
+  { dbz: 50, rgb: [255, 255, 255] },
 ];
 // Mix / sleet: lavender → deep purple.
 export const MIX_STOPS: Stop[] = [
