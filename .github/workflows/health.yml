@@ -1,0 +1,28 @@
+name: Free limits
+# Hourly: how close each free allowance is (D1 shards, Workers requests, Backblaze), cleans D1
+# early, and fails (GitHub then emails the owner) when anything passes its warning line.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "40 * * * *"
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: radar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install
+      - name: Check free limits
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: dedc07a5683632eda32bc8dccda3ed43
+          R2_ENDPOINT: https://s3.us-east-005.backblazeb2.com
+          R2_REGION: us-east-005
+          R2_BUCKET: ro-weather-maps
+          R2_ACCESS_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.B2_APP_KEY }}
+        run: bun health.ts
