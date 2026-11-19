@@ -6,9 +6,9 @@ name: Radar
 on:
   workflow_dispatch:
 
-concurrency:
-  group: radar
-  cancel-in-progress: false
+# Each part has its own queue (19 Nov 2026): one shared queue made the radar wait for the
+# slowest part (charts or satellite, ~7 min), so it fell 30 min behind. Now the radar part runs
+# every 5 minutes whatever the others are doing; a part still busy just skips one turn.
 
 jobs:
   draw:
@@ -19,6 +19,9 @@ jobs:
         part: [radar, forecast, sat, lightning, charts]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    concurrency:
+      group: maps-${{ matrix.part }}
+      cancel-in-progress: false
     defaults:
       run:
         working-directory: radar
