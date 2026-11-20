@@ -14,7 +14,7 @@ import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3
 import { kvGet, kvPut } from "./kv";
 import { d1On, hold, flush, pending, putFile } from "./d1";
 import { wetBulbNow, wetBulbSettled } from "./lib/server/wetbulb";
-import { historyTimes, latestOperaTime, opera, renderTile } from "./lib/server/radar24";
+import { historyTimes, latestOperaTime, opera, renderTile, renderData } from "./lib/server/radar24";
 import { renderNowcastTile, NOWCAST_MAX_LEAD_MIN } from "./lib/server/radarNowcast";
 import { buildClutter } from "./clutter";
 import { liveLightning, saveLightning } from "./lightning";
@@ -131,6 +131,8 @@ const CLOSE: [number, number, number][] = [];
 for (const [z, x0, x1, y0, y1] of [[7, 59, 66, 38, 44], [8, 118, 132, 77, 88]] as const)
   for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) CLOSE.push([z, x, y]);
 const jobs: (() => Promise<void>)[] = [];
+// The radar as numbers for the app's falling rain and snow (one small file a picture), newest first.
+for (const t of times.filter((t) => ok.has(t))) jobs.push(() => job(`data/${t}.png`, () => renderData(t)));
 for (const t of times.filter((t) => ok.has(t)))
   for (const [z, x, y] of [...VIEW, ...CLOSE])
     jobs.push(() => job(`tile/${t}/${z}/${x}/${y}@2x.webp`, () => renderTile(t, z, x, y, 2)));

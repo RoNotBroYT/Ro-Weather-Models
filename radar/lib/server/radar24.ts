@@ -1306,3 +1306,30 @@ export function historyTimes(hours: number, stepMin: number, latest: number): nu
   if (out[out.length - 1] !== latest) out.push(latest);
   return out;
 }
+
+
+/**
+ * The radar as numbers, not colours (owner, 20 Nov: the app's falling rain and snow guessed from
+ * colours and took drizzle for snow). One picture over the UK and its neighbours (the zoom-6
+ * area the job draws ahead, x 28-34, y 17-23), 96 px a square (~2 km): red = dBZ x 4
+ * (0 = nothing), green = phase x 127 (0 rain, 127 sleet, 254 snow, blended between).
+ */
+export const DATA_AREA = { z: 6, x0: 28, x1: 34, y0: 17, y1: 23, px: 96 } as const;
+export async function renderData(t: number): Promise<{ buf: Buffer; final: boolean }> {
+  const A = DATA_AREA, S = (A.x1 - A.x0 + 1) * A.px;
+  const west = tile2lon(A.x0, A.z), east = tile2lon(A.x1 + 1, A.z), north = tile2lat(A.y0, A.z), south = tile2lat(A.y1 + 1, A.z);
+  const o = await opera(t);
+  if (!o) throw new Error(`data ${t}: no radar file`);
+  const pf = await precipFieldWait(t);
+  const d = sampleOperaDbz(o, west, east, north, south, S);
+  const ph = pf ? tilePhase(pf, west, east, north, south, S) : null;
+  const c = createCanvas(S, S), cx = c.getContext("2d"), img = cx.createImageData(S, S);
+  for (let i = 0; i < S * S; i++) {
+    const v = d[i];
+    img.data[i * 4] = Number.isFinite(v) && v >= 10 ? Math.min(255, Math.round(v * 4)) : 0;
+    img.data[i * 4 + 1] = ph ? Math.round(Math.min(2, Math.max(0, phasePx(ph, S, i % S, Math.floor(i / S)))) * 127) : 0;
+    img.data[i * 4 + 3] = 255;
+  }
+  cx.putImageData(img, 0, 0);
+  return { buf: c.toBuffer("image/png"), final: pf != null };
+}
