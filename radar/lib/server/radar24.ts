@@ -25,7 +25,7 @@ import { n0qDbz } from "./n0qPalette";
 import { mrms, type MrmsField } from "./mrms";
 import { canadaTile } from "./canadaRadar";
 import { satRainField, type SatRainField } from "./globalRain";
-import { precipFieldNow, precipFieldWait, tileTypes, typedRgba, TYPE_BLOCK, type PrecipField } from "./precipType";
+import { precipFieldNow, precipFieldWait, tileTypes, typedRgba, tilePhase, phasePx, phaseRgba, TYPE_BLOCK, type PrecipField } from "./precipType";
 import { decodeDbzGrid } from "../rotationDetect";
 import { cacheLimit, parallelism } from "./localBoost";
 import {
@@ -461,8 +461,8 @@ export async function renderTile(
   const pf = await precipFieldWait(t);
   const nxI = nx as Awaited<ReturnType<typeof fetchImage>>;
   if (nxI) {
-    const types = pf ? tileTypes(pf, west, east, north, south, 256) : null;
-    if (types) {
+    const phase = pf ? tilePhase(pf, west, east, north, south, 256) : null;
+    if (phase) {
       // n0q tiles are pre-coloured: colour → dBZ (IEM's exact table), recoloured where cold.
       const c = createCanvas(256, 256);
       const cx = c.getContext("2d");
@@ -471,11 +471,11 @@ export async function renderTile(
       const d = im.data;
       for (let i = 0; i < 256 * 256; i++) {
         if (!d[i * 4 + 3]) continue;
-        const ty = types[((i >> 8) >> 2) * 64 + ((i & 255) >> 2)];
-        if (!ty) continue;
+        const ph = phasePx(phase, 256, i & 255, i >> 8);
+        if (ph <= 0.02) continue;
         const v = n0qDbz(d[i * 4], d[i * 4 + 1], d[i * 4 + 2], d[i * 4 + 3]);
         if (v <= -32) continue;
-        const [R, G, B, A] = typedRgba(ty, v);
+        const [R, G, B, A] = phaseRgba(ph, v, [d[i * 4], d[i * 4 + 1], d[i * 4 + 2], d[i * 4 + 3]]);
         d[i * 4] = R;
         d[i * 4 + 1] = G;
         d[i * 4 + 2] = B;
@@ -644,8 +644,7 @@ export function drawOpera(
   /** Opacity on top of the colour scale's own (the satellite estimate is drawn fainter). */
   alpha = 1
 ) {
-  const types = pf ? tileTypes(pf, west, east, north, south, S) : null;
-  const TB = Math.ceil(S / TYPE_BLOCK);
+  const phase = pf ? tilePhase(pf, west, east, north, south, S) : null;
   let dbzPx: Float32Array;
   // Zoomed out, the smoothing eases off gently (half as wide every two zoom levels below 7) and
   // never below a pixel: the same picture quality at every zoom, only a touch lighter right out,
@@ -720,8 +719,8 @@ export function drawOpera(
       img.data[i * 4 + 3] = 0;
       continue;
     }
-    const ty = types ? types[Math.floor(i / S / TYPE_BLOCK) * TB + Math.floor((i % S) / TYPE_BLOCK)] : 0;
-    const [R, G, B, A] = ty ? typedRgba(ty, v) : dbzToRgba(v);
+    const ph = phase ? phasePx(phase, S, i % S, Math.floor(i / S)) : 0;
+    const [R, G, B, A] = ph > 0.02 ? phaseRgba(ph, v, dbzToRgba(v) as [number, number, number, number]) : dbzToRgba(v);
     if (!A) continue;
     img.data[i * 4] = R;
     img.data[i * 4 + 1] = G;
