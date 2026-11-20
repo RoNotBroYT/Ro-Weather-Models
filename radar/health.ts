@@ -49,6 +49,20 @@ try {
   if (r?.errors?.length) line(`Workers requests: not readable with this key (${String(r.errors[0]?.message).slice(0, 80)}); the owner can add "Account Analytics: Read" to CF_API_TOKEN`);
 } catch (e) { line(`Workers requests: could not read (${String(e).slice(0, 100)})`); }
 
+// D1 rows written so far today (UTC), all databases: the free 100,000 a day is a hard stop (on
+// 20 Nov the radar froze at 20:15 when it ran out).
+try {
+  const day = new Date().toISOString().slice(0, 10);
+  const q = `query { viewer { accounts(filter:{accountTag:"${ACC}"}) { d1AnalyticsAdaptiveGroups(limit:50, filter:{date_geq:"${day}"}) { sum { rowsWritten } } } } }`;
+  const r = await (await fetch("https://api.cloudflare.com/client/v4/graphql", { method: "POST", headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify({ query: q }) })).json() as any;
+  const rows = r?.data?.viewer?.accounts?.[0]?.d1AnalyticsAdaptiveGroups ?? [];
+  const w = rows.reduce((a: number, x: any) => a + (x.sum?.rowsWritten ?? 0), 0);
+  const hrs = new Date().getUTCHours() + new Date().getUTCMinutes() / 60;
+  const pct = Math.round((w / 100_000) * 100), pace = hrs > 1 ? Math.round((w / hrs) * 24 / 1000) : null;
+  line(`D1 rows written today: ${w} (${pct}% of 100,000${pace != null ? `, on pace for ~${pace}k` : ""})`);
+  if (pct >= 70 || (pace != null && pace >= 90)) warnings.push(`D1 writes at ${pct}% of the free 100,000 a day (pace ~${pace}k)`);
+} catch (e) { line(`D1 writes: could not read (${String(e).slice(0, 100)})`); }
+
 // Backblaze bucket size.
 try {
   const s3 = new S3Client({ region: process.env.R2_REGION ?? "auto", endpoint: process.env.R2_ENDPOINT,

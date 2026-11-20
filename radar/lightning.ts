@@ -147,7 +147,7 @@ export async function liveLightning(
     const rows = flashes.map((x) => [+x.lon.toFixed(3), +x.lat.toFixed(3), Math.max(0, Math.round((now - x.t) / 1000)), Math.max(0, Math.min(3, Math.round(Math.log10(Math.max(x.e, 1e-16)) + 15)))]);
     await put("lightning/live.json", JSON.stringify({ at: now, flashes: rows }), 15);
     writes++;
-    const wait = 20_000 - (Date.now() - now);
+    const wait = 45_000 - (Date.now() - now);   // was 20 s: each save is a D1 write (100,000 free a day)
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   }
   return `lightning live: ${writes} updates, ${flashes.length} flashes in the last 10 min (${flashes.filter((f) => f.lon >= -40).length} from MTG)`;

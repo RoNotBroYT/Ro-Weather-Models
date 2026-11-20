@@ -87,10 +87,9 @@ async function store(req, env) {
       await write();
     }
   }
-  if (new URL(req.url).searchParams.has("clean")) {
-    const now = Math.floor(Date.now() / 1000);
-    await Promise.all([...ALL(env), env.DB].filter(Boolean).map((db) => db.prepare("DELETE FROM tiles WHERE exp < ?").bind(now).run().catch(() => null)));
-  }
+  // Expired rows are no longer cleared on every save (20 Nov: that, and an index on exp, made each
+  // stored row cost ~4 of D1's 100,000 free writes a day and the radar stopped at 20:15). They are
+  // cleared once an hour by /_health (radar/health.ts) instead.
   return new Response(`stored ${rows.length}`, { status: 200 });
 }
 
@@ -103,6 +102,9 @@ export default {
       const dbs = [...ALL(env), env.DB].filter(Boolean);
       const sizes = await Promise.all(dbs.map(async (db) => {
         try {
+          // Hourly: delete what has expired (moved here from every save).
+          const now = Math.floor(Date.now() / 1000);
+          await db.prepare("DELETE FROM tiles WHERE exp < ?").bind(now).run().catch(() => null);
           const r = await db.prepare("SELECT 1").run();
           // Space really in use: the file minus pages SQLite has freed (re-used before it grows).
           let file = r.meta?.size_after ?? null;
