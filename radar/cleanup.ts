@@ -8,7 +8,7 @@ const Bucket = process.env.R2_BUCKET!;
 // on 15 Nov twice). At most ~12 h of pictures are ever stored now.
 const cutoff = Date.now() - 6 * 3600_000;
 let total = 0;
-for (const Prefix of ["tile/", "nowcast/", "s2/", "s3/", "sat/", "lightning/", "gfs/"]) {
+for (const Prefix of ["tile/", "data/", "nowcast/", "s2/", "s3/", "sat/", "lightning/", "gfs/"]) {
   // Every stored version and hide marker: a plain delete on Backblaze only hides
   // the file, which still counts towards the 10 GB.
   let km: string | undefined, vm: string | undefined; let n = 0;
