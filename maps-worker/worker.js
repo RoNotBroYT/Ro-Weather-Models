@@ -132,6 +132,17 @@ export default {
     const cacheKey = new Request(url.origin + url.pathname);
     let res = await cache.match(cacheKey);
     if (res) return res;
+    // The frame lists ("done-*.json") from D1 first (23 Nov): KV's free 1,000 writes a day ran out and the
+    // radar froze; the job now also saves each list to D1 as "lists/<name>" (one row each time).
+    if (env.T0 && /^done-[a-z]+\.json$/.test(key)) {
+      const lk = "lists/" + key;
+      const row = await shard(env, lk).prepare("SELECT data FROM tiles WHERE k = ? AND part = 0").bind(lk).first().catch(() => null);
+      if (row) {
+        res = new Response(new Uint8Array(row.data), { status: 200, headers: { "Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=30", "Content-Type": "application/json" } });
+        ctx.waitUntil(cache.put(cacheKey, res.clone()));
+        return res;
+      }
+    }
     // The small lists the radar job keeps (what's ready, the chart run): from KV, free and
     // generous, so they never use up Backblaze's daily download allowance (16 Nov).
     if (env.LISTS && /\.(json|bin)$/.test(key)) {

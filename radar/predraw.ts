@@ -119,8 +119,11 @@ async function publish() {
   lastBody = body;
   if (local) await fs.writeFile(`out/${DONE}`, body);
   else {
-    await kvPut(DONE, body);
-    await s3.send(new PutObjectCommand({ Bucket, Key: DONE, Body: body, ContentType: "application/json", CacheControl: "no-store" }));
+    // D1 first (what the Worker serves; 23 Nov), then KV and Backblaze as before. A refusal from one (KV's daily
+    // limit) must not stop the others.
+    if (useD1) await putFile(`lists/${DONE}`, body).catch((e) => console.warn("d1 list", String(e).slice(0, 150)));
+    await kvPut(DONE, body).catch((e) => console.warn("kv list", String(e).slice(0, 150)));
+    await s3.send(new PutObjectCommand({ Bucket, Key: DONE, Body: body, ContentType: "application/json", CacheControl: "no-store" })).catch((e) => console.warn("b2 list", String(e).slice(0, 150)));
   }
 }
 
