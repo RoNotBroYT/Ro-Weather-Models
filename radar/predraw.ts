@@ -83,6 +83,27 @@ async function pool(jobs: (() => Promise<void>)[], n = 8) {
   await Promise.all(Array.from({ length: n }, async () => { while (i < jobs.length) await jobs[i++]().catch((e) => { console.warn(String(e).slice(0, 200)); failed = true; }); }));
 }
 
+
+/** Saves every finished frame's pictures and writes the list of done frames (what the app and site read). */
+async function publish() {
+  // Send each finished frame's pictures (unfinished ones are drawn again next run).
+  for (const g of [...pending.keys()]) {
+    if (!groups.has(g) || unfinished.has(g)) continue;
+    await flush(g, 7).catch((e) => { console.warn(String(e).slice(0, 200)); unfinished.add(g); failed = true; });
+  }
+  // A frame counts as done only when every one of its pictures was saved; list the last 6 h
+  // (the cleanup deletes older pictures, so older frames must not be offered).
+  const cutoff = Date.now() - 6 * 3600_000;
+  const all = [...new Set([...done, ...([...groups].filter((g) => !unfinished.has(g)))])];
+  const keep = [...all.filter((g) => !/^(s2|s3|sat)\//.test(g) && Number(g.split("/")[1]) > cutoff), ...all.filter((g) => g.startsWith("s3/")).slice(useD1 ? -36 : -80)];
+  const body = Buffer.from(JSON.stringify([...new Set(keep), ...(useD1 ? ["d1"] : [])]));
+  if (local) await fs.writeFile(`out/${DONE}`, body);
+  else {
+    await kvPut(DONE, body);
+    await s3.send(new PutObjectCommand({ Bucket, Key: DONE, Body: body, ContentType: "application/json", CacheControl: "no-store" }));
+  }
+}
+
 // Satellite lightning (GOES GLM): its own machine; nothing else from this file runs there.
 if (PART === "lightning") {
   const get = async (Key: string) => {
@@ -113,7 +134,7 @@ const latest = await latestOperaTime();
 if (PART === "radar" || PART === "forecast") {
   const t0 = Date.now();
   for (const t of [latest, latest + 3_600_000]) wetBulbNow(t);
-  while (!wetBulbSettled(latest) && Date.now() - t0 < 180_000) await new Promise((r) => setTimeout(r, 1000));
+  while (!wetBulbSettled(latest) && Date.now() - t0 < 75_000) await new Promise((r) => setTimeout(r, 1000));
   console.log(`[wetbulb] ready after ${Math.round((Date.now() - t0) / 1000)} s: ${wetBulbNow(latest) ? "ICON-EU" : "not available, GFS rule"}`);
   started = Date.now();
 }
@@ -132,10 +153,13 @@ for (const [z, x0, x1, y0, y1] of [[7, 59, 66, 38, 44], [8, 118, 132, 77, 88]] a
   for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) CLOSE.push([z, x, y]);
 const jobs: (() => Promise<void>)[] = [];
 // The radar as numbers for the app's falling rain and snow (one small file a picture), newest first.
-for (const t of times.filter((t) => ok.has(t))) jobs.push(() => job(`data/${t}.png`, () => renderData(t)));
-for (const t of times.filter((t) => ok.has(t)))
-  for (const [z, x, y] of [...VIEW, ...CLOSE])
-    jobs.push(() => job(`tile/${t}/${z}/${x}/${y}@2x.webp`, () => renderTile(t, z, x, y, 2)));
+// Scan by scan, newest first (23 Nov: all the rain data came before any picture, so the newest scan waited).
+const newestJobs: (() => Promise<void>)[] = [];
+for (const t of times.filter((t) => ok.has(t))) {
+  const list = t === latest ? newestJobs : jobs;
+  list.push(() => job(`data/${t}.png`, () => renderData(t)));
+  for (const [z, x, y] of [...VIEW, ...CLOSE]) list.push(() => job(`tile/${t}/${z}/${x}/${y}@2x.webp`, () => renderTile(t, z, x, y, 2)));
+}
 // The forecast, as the site's frame list makes it (UK and Europe only).
 const now = Date.now();
 const forecast: number[] = [];
@@ -160,7 +184,13 @@ if (doing("radar")) {
     }
   }
 }
-if (doing("radar")) await pool(jobs, 10); // newest first
+if (doing("radar")) {
+  // The newest scan, then its list at once (owner, 23 Nov: the app was 25 to 45 minutes behind, because the
+  // list was only written at the end of a ~9 minute run). The older frames follow and the list is written again.
+  await pool(newestJobs, 10);
+  await publish();
+  await pool(jobs, 10);
+}
 if (doing("forecast")) await pool(fjobs, 10);
 // Satellite: the newest picture's squares (world, Europe, UK), as the site's map asks
 // for them (components/satView.ts satTiles). Keyed by the scans used, so never stale.
@@ -217,20 +247,5 @@ if (doing("sat")) try {
   console.warn("satellite skipped:", String(e).slice(0, 200));
 }
 
-// Send each finished frame's pictures (unfinished ones are drawn again next run).
-for (const g of [...pending.keys()]) {
-  if (!groups.has(g) || unfinished.has(g)) continue;
-  await flush(g, 7).catch((e) => { console.warn(String(e).slice(0, 200)); unfinished.add(g); failed = true; });
-}
-// A frame counts as done only when every one of its pictures was saved; list the last 6 h
-// (the cleanup deletes older pictures, so older frames must not be offered).
-const cutoff = Date.now() - 6 * 3600_000;
-const all = [...new Set([...done, ...([...groups].filter((g) => !unfinished.has(g)))])];
-const keep = [...all.filter((g) => !/^(s2|s3|sat)\//.test(g) && Number(g.split("/")[1]) > cutoff), ...all.filter((g) => g.startsWith("s3/")).slice(useD1 ? -36 : -80)];
-const body = Buffer.from(JSON.stringify([...new Set(keep), ...(useD1 ? ["d1"] : [])]));
-if (local) await fs.writeFile(`out/${DONE}`, body);
-else {
-  await kvPut(DONE, body);
-  await s3.send(new PutObjectCommand({ Bucket, Key: DONE, Body: body, ContentType: "application/json", CacheControl: "no-store" }));
-}
+await publish();
 console.log(`[${PART}] newest ${new Date(latest).toISOString()}: drew ${drawn}, already there ${skipped}, ${Math.round((Date.now() - started) / 1000)} s`);
