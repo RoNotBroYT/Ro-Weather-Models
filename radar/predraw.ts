@@ -49,6 +49,10 @@ const fs = await import("fs/promises");
 const readDone = async (): Promise<string[]> => {
   try {
     if (local) return JSON.parse(await fs.readFile(`out/${DONE}`, "utf8"));
+    // Through the Worker first (it serves the D1 copy; 23 Nov: KV's daily writes ran out, its copy went stale and every
+    // run redrew everything since), then KV, then Backblaze.
+    const w = await fetch(`https://radar.ro-weather.app/${DONE}?r=${Date.now()}`, { signal: AbortSignal.timeout(15_000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (Array.isArray(w) && w.length) return w;
     const k = await kvGet(DONE);
     if (k) return JSON.parse(k);
     const r = await s3.send(new GetObjectCommand({ Bucket, Key: DONE }));

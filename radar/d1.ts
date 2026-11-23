@@ -35,7 +35,8 @@ const rec = (k: string, part: number, exp: number, data: Buffer) => {
 let cleaned = false;
 async function send(recs: Buffer[], what: string) {
   // At most ~6 MB a request (big satellite frames were turned away whole), each tried 3 times.
-  const MAX = 6_000_000;
+  // About 1 MB a request (23 Nov): 6 MB ones ran past the free Worker's CPU limit and failed ("exceededResources").
+  const MAX = 1_000_000;
   for (let i = 0; i < recs.length; ) {
     const part: Buffer[] = [];
     let size = 0;
