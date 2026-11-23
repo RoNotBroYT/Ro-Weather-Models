@@ -36,15 +36,36 @@ function shard(env, k) {
 }
 const ALL = (env) => [0, 1, 2, 3, 4, 5, 6, 7].map((i) => env["T" + i]).filter(Boolean);
 
-async function fromD1(env, key) {
+async function fromD1(env, key, ctx) {
   const m = PICT.exec(key);
   if (!m || !env.T0) return null;
   const [, g, z, xs, ys, s = ""] = m, x = +xs, y = +ys;
   const blk = `${g}/${z}/${Math.floor(x / B)}/${Math.floor(y / B)}${s}`;
-  let { results } = await shard(env, blk).prepare("SELECT data FROM tiles WHERE k = ?").bind(blk).all();
-  if (!results?.length && env.DB) ({ results } = await env.DB.prepare("SELECT data FROM tiles WHERE k = ?").bind(blk).all());
-  for (const r of results ?? []) {
-    const u = new Uint8Array(r.data), v = new DataView(u.buffer, u.byteOffset, u.byteLength);
+  // The whole block, kept in Cloudflare's cache after the first read (23 Nov): the app asks for 16 neighbouring
+  // squares at once, and each used to read the same block (up to 1.8 MB) from D1 again. Recent blocks only briefly
+  // (a block waiting for a late radar is written again), older ones for a day.
+  const ck = new Request("https://blocks.ro-weather.internal/" + encodeURIComponent(blk));
+  let parts = null;
+  const hit = await caches.default.match(ck).catch(() => null);
+  if (hit) {
+    const all = new Uint8Array(await hit.arrayBuffer()), dv = new DataView(all.buffer);
+    parts = []; let o = 4;
+    for (let i = 0, n = dv.getUint32(0); i < n; i++) { const len = dv.getUint32(o); o += 4; parts.push(all.subarray(o, o + len)); o += len; }
+  } else {
+    let { results } = await shard(env, blk).prepare("SELECT data FROM tiles WHERE k = ?").bind(blk).all();
+    if (!results?.length && env.DB) ({ results } = await env.DB.prepare("SELECT data FROM tiles WHERE k = ?").bind(blk).all());
+    parts = (results ?? []).map((r) => new Uint8Array(r.data));
+    if (parts.length) {
+      const size = 4 + parts.reduce((a, p) => a + 4 + p.length, 0), all = new Uint8Array(size), dv = new DataView(all.buffer);
+      dv.setUint32(0, parts.length); let o = 4;
+      for (const p of parts) { dv.setUint32(o, p.length); o += 4; all.set(p, o); o += p.length; }
+      const t = Number(g.split("/")[1]);
+      const age = Number.isFinite(t) && Date.now() - t < 40 * 60_000 ? 120 : 86400;
+      if (ctx) ctx.waitUntil(caches.default.put(ck, new Response(all, { headers: { "Cache-Control": `public, max-age=${age}` } })).catch(() => {}));
+    }
+  }
+  for (const part of parts ?? []) {
+    const u = part, v = new DataView(u.buffer, u.byteOffset, u.byteLength);
     const n = v.getUint32(0), base = 4 + n * 12;
     for (let i = 0; i < n; i++) {
       const o = 4 + i * 12;
@@ -155,7 +176,7 @@ export default {
         return res;
       }
     }
-    const pic = await fromD1(env, key).catch(() => null);
+    const pic = await fromD1(env, key, ctx).catch(() => null);
     if (pic) {
       const hk = new Headers({ "Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400, immutable",
         "Content-Type": pic[0] === 0x52 && pic[1] === 0x49 ? "image/webp" : "image/jpeg" });
