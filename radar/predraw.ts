@@ -144,7 +144,10 @@ const times = [...new Set([[2, 5], [6, 10], [12, 20], [24, 30]].flatMap(([h, st]
 // would otherwise be saved as "finished" and stay wrong): skip that time, the site draws it.
 const ok = new Set<number>();
 const radarWork = doing("radar") || doing("forecast");
-if (radarWork) await Promise.all((doing("radar") ? times : [latest]).map(async (t) => { if (await opera(t).catch(() => null)) ok.add(t); }));
+// Only the newest scan's file first (23 Nov: downloading the whole loop's files, ~2 MB each, took 8 minutes
+// before anything was drawn); the older ones are checked after the newest scan is published.
+const check = (ts: number[]) => Promise.all(ts.map(async (t) => { if (await opera(t).catch(() => null)) ok.add(t); }));
+if (radarWork) await check([latest]);
 if (radarWork && !ok.has(latest)) { console.log("newest European radar file not readable: nothing saved"); process.exit(1); }
 // Past radar also at zoom 7 and 8 over Great Britain and Ireland: the app (and the site,
 // with your location on) opens zoomed in on a town, where nothing was drawn ahead.
@@ -155,11 +158,11 @@ const jobs: (() => Promise<void>)[] = [];
 // The radar as numbers for the app's falling rain and snow (one small file a picture), newest first.
 // Scan by scan, newest first (23 Nov: all the rain data came before any picture, so the newest scan waited).
 const newestJobs: (() => Promise<void>)[] = [];
-for (const t of times.filter((t) => ok.has(t))) {
-  const list = t === latest ? newestJobs : jobs;
+const scanJobs = (t: number, list: (() => Promise<void>)[]) => {
   list.push(() => job(`data/${t}.png`, () => renderData(t)));
   for (const [z, x, y] of [...VIEW, ...CLOSE]) list.push(() => job(`tile/${t}/${z}/${x}/${y}@2x.webp`, () => renderTile(t, z, x, y, 2)));
-}
+};
+if (ok.has(latest)) scanJobs(latest, newestJobs);
 // The forecast, as the site's frame list makes it (UK and Europe only).
 const now = Date.now();
 const forecast: number[] = [];
@@ -171,24 +174,26 @@ for (const ft of forecast)
   for (const [z, x, y] of VIEW.filter(([z]) => z >= 4))
     fjobs.push(() => job(`nowcast/${latest}/${ft}/${z}/${x}/${y}@2x.webp`, () => renderNowcastTile(latest, ft, z, x, y, 2)));
 // Newest history frame and the forecast first (what people open), then the rest.
-// Once a day: rebuild the clutter list from the past day's frames (before drawing,
-// so today's pictures use it). See clutter.ts.
-if (doing("radar")) {
-  const age = local ? Infinity : await fetch("https://radar.ro-weather.app/clutter.bin", { method: "HEAD" }).then((r) => (r.ok ? Date.now() - Date.parse(r.headers.get("last-modified") ?? "0") : Infinity)).catch(() => Infinity);
-  if (age > 86_400_000) {
-    const list = await buildClutter([...ok]);
-    if (list) {
-      const body = Buffer.from(list.buffer);
-      if (local) await fs.writeFile("out/clutter.bin", body);
-      else await s3.send(new PutObjectCommand({ Bucket, Key: "clutter.bin", Body: body, ContentType: "application/octet-stream", CacheControl: "public, max-age=3600" }));
-    }
-  }
-}
 if (doing("radar")) {
   // The newest scan, then its list at once (owner, 23 Nov: the app was 25 to 45 minutes behind, because the
   // list was only written at the end of a ~9 minute run). The older frames follow and the list is written again.
   await pool(newestJobs, 10);
   await publish();
+  await check(times.filter((t) => t !== latest));
+  for (const t of times.filter((t) => t !== latest && ok.has(t))) scanJobs(t, jobs);
+  // Once a day: rebuild the clutter list from the past day's frames (before drawing,
+  // so today's pictures use it). See clutter.ts.
+  if (doing("radar")) {
+    const age = local ? Infinity : await fetch("https://radar.ro-weather.app/clutter.bin", { method: "HEAD" }).then((r) => (r.ok ? Date.now() - Date.parse(r.headers.get("last-modified") ?? "0") : Infinity)).catch(() => Infinity);
+    if (age > 86_400_000) {
+      const list = await buildClutter([...ok]);
+      if (list) {
+        const body = Buffer.from(list.buffer);
+        if (local) await fs.writeFile("out/clutter.bin", body);
+        else await s3.send(new PutObjectCommand({ Bucket, Key: "clutter.bin", Body: body, ContentType: "application/octet-stream", CacheControl: "public, max-age=3600" }));
+      }
+    }
+  }
   await pool(jobs, 10);
 }
 if (doing("forecast")) await pool(fjobs, 10);
