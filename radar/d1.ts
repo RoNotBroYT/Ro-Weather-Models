@@ -7,6 +7,14 @@ const PICT = /^((?:tile|nowcast|s3|gfs\/tile)\/.+)\/(\d+)\/(\d+)\/(\d+)(@2x)?\.w
 const BLK = 16, PART_MAX = 1_800_000;
 export const pending = new Map<string, Map<string, [number, number, Buffer][]>>();
 
+/** The 16 x 16 block a picture is stored in ("tile/T/z/bx/by@2x"), or null if it isn't a map square. */
+export function blockOf(Key: string): string | null {
+  const m = PICT.exec(Key);
+  if (!m) return null;
+  const [, g, z, xs, ys, sfx = ""] = m;
+  return `${g}/${z}/${Math.floor(+xs / BLK)}/${Math.floor(+ys / BLK)}${sfx}`;
+}
+
 /** Keep a drawn square for its frame's block; false if the key isn't a map square. */
 export function hold(Key: string, buf: Buffer) {
   const m = PICT.exec(Key);

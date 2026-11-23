@@ -12,7 +12,8 @@
  */
 import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 import { kvGet, kvPut } from "./kv";
-import { d1On, hold, flush, pending, putFile } from "./d1";
+import { lonLatToGrid } from "./lib/server/operaRadar";
+import { d1On, hold, flush, pending, putFile, blockOf } from "./d1";
 import { wetBulbNow, wetBulbSettled } from "./lib/server/wetbulb";
 import { historyTimes, latestOperaTime, opera, renderTile, renderData } from "./lib/server/radar24";
 import { renderNowcastTile, NOWCAST_MAX_LEAD_MIN } from "./lib/server/radarNowcast";
@@ -56,7 +57,13 @@ const readDone = async (): Promise<string[]> => {
 };
 // "d1" in a list marks frames saved to D1; an older list (frames in Backblaze) is started afresh.
 const done = new Set(await readDone().then((l) => (process.env.MAPS_PUT_KEY && process.env.R2_ENDPOINT && !l.includes("d1") ? [] : l)));
-const exists = async (Key: string) => done.has(Key.replace(/\/\d+\/\d+\/\d+(@2x)?\.webp$/, ""));
+// Blocks of a listed radar frame still waiting for a late radar (23 Nov): kept in the list as "redo:<block>",
+// drawn again (whole block, so its stored row is complete) until every square in them is final.
+const redo = new Set([...done].filter((g) => g.startsWith("redo:")).map((g) => g.slice(5)));
+for (const g of [...done]) if (g.startsWith("redo:")) done.delete(g);
+const newRedo = new Set<string>();
+const touched = new Set<string>();   // redo blocks drawn again this run
+const exists = async (Key: string) => { const b = blockOf(Key); if (b && redo.has(b)) return false; return done.has(Key.replace(/\/\d+\/\d+\/\d+(@2x)?\.webp$/, "")); };
 // Drawn pictures go to Cloudflare D1 through radar.ro-weather.app (see d1.ts).
 const useD1 = !local && d1On;
 const put = (Key: string, buf: Buffer, type = "image/webp") => useD1 && hold(Key, buf) ? Promise.resolve() : local ? fs.mkdir(`out/${Key.replace(/\/[^/]+$/, "")}`, { recursive: true }).then(() => fs.writeFile(`out/${Key}`, buf)) :
@@ -70,11 +77,17 @@ const groups = new Set<string>();
 async function job(key: string, draw: () => Promise<{ buf: Buffer; final: boolean }>) {
   groups.add(group(key));
   if (await exists(key)) return void skipped++;
+  { const b = blockOf(key); if (b && redo.has(b)) touched.add(b); }
   // At most ~4 min of drawing per run (newest first), so every run finishes and records
   // what it did; the rest of a first fill carries on in the next runs.
   if (Date.now() - started > 240_000) return void unfinished.add(group(key));
   const { buf, final } = await draw().catch((e) => { unfinished.add(group(key)); throw e; });
-  if (!final) { unfinished.add(group(key)); return; } // still filling in at the source: the site draws it for now
+  if (!final) {
+    // A radar picture still waiting for a late radar: the frame is listed now and this block is drawn again next run.
+    const b = key.startsWith("tile/") ? blockOf(key) : null;
+    if (b) { newRedo.add(b); return; }
+    unfinished.add(group(key)); return; // still filling in at the source: the site draws it for now
+  }
   await put(key, buf).catch((e) => { unfinished.add(group(key)); throw e; });
   drawn++;
 }
@@ -85,6 +98,7 @@ async function pool(jobs: (() => Promise<void>)[], n = 8) {
 
 
 /** Saves every finished frame's pictures and writes the list of done frames (what the app and site read). */
+let lastBody: Buffer | null = null;
 async function publish() {
   // Send each finished frame's pictures (unfinished ones are drawn again next run).
   for (const g of [...pending.keys()]) {
@@ -96,7 +110,13 @@ async function publish() {
   const cutoff = Date.now() - 6 * 3600_000;
   const all = [...new Set([...done, ...([...groups].filter((g) => !unfinished.has(g)))])];
   const keep = [...all.filter((g) => !/^(s2|s3|sat)\//.test(g) && Number(g.split("/")[1]) > cutoff), ...all.filter((g) => g.startsWith("s3/")).slice(useD1 ? -36 : -80)];
-  const body = Buffer.from(JSON.stringify([...new Set(keep), ...(useD1 ? ["d1"] : [])]));
+  // Still waiting: what this run found waiting, plus last run's blocks not drawn again yet (never dropped unseen).
+  const waiting = new Set([...newRedo, ...[...redo].filter((b) => !touched.has(b))]);
+  const redoKeep = [...waiting].filter((b) => Number(b.split("/")[1]) > cutoff).map((b) => "redo:" + b);
+  const body = Buffer.from(JSON.stringify([...new Set(keep), ...(useD1 ? ["d1"] : []), ...redoKeep]));
+  // Cloudflare KV allows 1,000 free writes a day: the second list of a run is only written if it changed.
+  if (lastBody && lastBody.equals(body)) return;
+  lastBody = body;
   if (local) await fs.writeFile(`out/${DONE}`, body);
   else {
     await kvPut(DONE, body);
@@ -195,6 +215,7 @@ if (doing("radar")) {
     }
   }
   await pool(jobs, 10);
+  await clutterTest(latest).catch((e) => console.warn("clutter test", String(e).slice(0, 150)));
 }
 if (doing("forecast")) await pool(fjobs, 10);
 // Satellite: the newest picture's squares (world, Europe, UK), as the site's map asks
@@ -254,3 +275,39 @@ if (doing("sat")) try {
 
 await publish();
 console.log(`[${PART}] newest ${new Date(latest).toISOString()}: drew ${drawn}, already there ${skipped}, ${Math.round((Date.now() - started) / 1000)} s`);
+
+
+/**
+ * TEST ONLY, changes nothing (owner, 23 Nov: Dublin's false "storms" fed the rain forecast). For the newest scan:
+ * strong echoes (30 dBZ or more) over the UK and Ireland, grouped by half-degree squares, and what the satellite
+ * rain product (H SAF h40b, EUMETSAT) says there. Logs which ones a filter would remove, to check before using it.
+ */
+async function clutterTest(t: number) {
+  const o = await opera(t);
+  if (!o) return;
+  const cells = new Map<string, { la: number; lo: number; n: number; max: number }>();
+  for (let la = 49.8; la <= 60.9; la += 0.1) for (let lo = -10.8; lo <= 2.0; lo += 0.1) {
+    const { col, row } = lonLatToGrid(lo, la, o.grid);
+    const c = Math.round(col), r = Math.round(row);
+    if (r < 0 || c < 0 || r >= o.grid.rows || c >= o.grid.cols) continue;
+    const v = o.read(r, r + 1, c, c + 1)[0];
+    if (v === o.nodata || v === o.undetect || !Number.isFinite(v)) continue;
+    const dbz = v * o.gain + o.offset;
+    if (dbz < 30) continue;
+    const k = `${Math.round(la * 2) / 2},${Math.round(lo * 2) / 2}`;
+    const e = cells.get(k) ?? { la: 0, lo: 0, n: 0, max: 0 };
+    e.la += la; e.lo += lo; e.n++; e.max = Math.max(e.max, dbz); cells.set(k, e);
+  }
+  const iso = new Date(t).toISOString().replace(".000", "");
+  const list = [...cells.values()].sort((a, b) => b.n - a.n).slice(0, 12);
+  if (!list.length) return void console.log("[clutter-test] no strong echoes over the UK and Ireland");
+  for (const c of list) {
+    const la = c.la / c.n, lo = c.lo / c.n;
+    const u = `https://view.eumetsat.int/geoserver/ows?service=WMS&version=1.3.0&request=GetFeatureInfo&layers=mtg_fd:h40b&query_layers=mtg_fd:h40b&styles=&crs=EPSG:4326&bbox=${la - 0.05},${lo - 0.05},${la + 0.05},${lo + 0.05}&width=11&height=11&i=5&j=5&info_format=application/json&time=${iso}`;
+    const j = await fetch(u, { signal: AbortSignal.timeout(15_000) }).then((r) => r.json()).catch(() => null) as { features?: { properties?: Record<string, number> }[] } | null;
+    const p = j?.features?.[0]?.properties;
+    const rain = p?.Instantaneous_rain_rate, q = p?.Quality_index;
+    const would = rain === 0 && (q ?? 0) >= 50;
+    console.log(`[clutter-test] ${la.toFixed(2)},${lo.toFixed(2)}: ${c.n} spots up to ${c.max.toFixed(0)} dBZ; satellite ${rain ?? "?"} mm/h (quality ${q ?? "?"})${would ? " -> would remove" : ""}`);
+  }
+}
