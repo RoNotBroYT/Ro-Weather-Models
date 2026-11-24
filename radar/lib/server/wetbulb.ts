@@ -111,15 +111,21 @@ export function wetBulbAt(f: WetBulbField, lat: number, lon: number): number {
   for (const s of f.fix) {
     const dy = (lat - s.lat) * 111, dx = (lon - s.lon) * 111 * Math.cos((lat * Math.PI) / 180);
     const d2 = dx * dx + dy * dy;
-    if (d2 > 60 * 60) continue;
-    const w = Math.exp(-d2 / (2 * 22 * 22));
+    // Wider (owner, 24 Nov: sleet shown over Oxford, Birmingham and Stoke where webcams and airports had rain).
+    if (d2 > 100 * 100) continue;
+    const w = Math.exp(-d2 / (2 * 38 * 38));
     wsum += w; dsum += w * s.d;
     if (s.snow) snow += w; if (s.rain) rain += w;
   }
   if (wsum > 0) tw += (dsum / wsum) * Math.min(1, wsum);
   // An airport seeing snow keeps it snow close by; seeing rain keeps it rain.
   if (snow > 0.3) tw = Math.min(tw, 0.4);
-  else if (rain > 0.3 && tw < 1.6) tw = Math.max(tw, 1.6);
+  else if (rain > 0.15 && tw < 1.6) {
+    // Rain at the airports: rain in the towns around them too. High ground (over 250 m) keeps its own value,
+    // so sleet or wet snow can still show on the hills.
+    const g = groundAt(lat, lon);
+    if (!(g > 250)) tw = Math.max(tw, 1.6);
+  }
   return tw;
 }
 
