@@ -86,6 +86,7 @@ async function job(key: string, draw: () => Promise<{ buf: Buffer; final: boolea
   // what it did; the rest of a first fill carries on in the next runs.
   if (Date.now() - started > 240_000) return void unfinished.add(group(key));
   const { buf, final } = await draw().catch((e) => { unfinished.add(group(key)); throw e; });
+  if (!final) sheetKeep(key, buf);   // the ready-made pictures use it too (a late radar fills in on the squares)
   if (!final) {
     // A radar picture still waiting for a late radar: the frame is listed now and this block is drawn again next run.
     const b = key.startsWith("tile/") ? blockOf(key) : null;
@@ -94,6 +95,35 @@ async function job(key: string, draw: () => Promise<{ buf: Buffer; final: boolea
   }
   await put(key, buf).catch((e) => { unfinished.add(group(key)); throw e; });
   drawn++;
+  sheetKeep(key, buf);
+}
+
+// 24 Nov: one ready-made picture per frame for the world (zoom 2), Europe (4) and the UK (6), so the app
+// fetches 3 files a frame instead of ~95 squares (instant like Zoom Earth, and far fewer Worker requests).
+// Made only when every square of that zoom was drawn in this run (a frame finished over two runs gets none;
+// the app then falls back to the squares).
+const SHEET_PPT = 256;
+// Owner, 24 Nov: people start zoomed in on the UK, so the whole of Great Britain and Ireland at zoom 7 (the radar's own
+// ~1 km detail) is one picture too - past frames only (the forecast isn't drawn that close).
+const sheetArea = new Map<number, readonly [number, number, number, number, number]>([...AREA.filter(([z]) => z === 2 || z === 4 || z === 6), [7, 59, 66, 38, 44] as const].map((a) => [a[0], a]));
+const sheetBufs = new Map<string, [number, number, Buffer][]>();
+const SQ = /^((?:tile|nowcast\/\d+)\/\d+)\/(\d+)\/(\d+)\/(\d+)@2x\.webp$/;
+function sheetKeep(key: string, buf: Buffer) {
+  const m = SQ.exec(key); if (!m) return;
+  const z = +m[2], a = sheetArea.get(z); if (!a) return;
+  const k = `${m[1]}/sheet${z}.webp`;
+  let l = sheetBufs.get(k); if (!l) sheetBufs.set(k, (l = []));
+  l.push([+m[3], +m[4], buf]);
+  if (l.length === (a[2] - a[1] + 1) * (a[4] - a[3] + 1)) { sheetBufs.delete(k); sheets.push(makeSheet(k, a, l).catch((e) => console.warn("sheet", k, String(e).slice(0, 150)))); }
+}
+const sheets: Promise<void>[] = [];
+async function makeSheet(k: string, a: readonly [number, number, number, number, number], l: [number, number, Buffer][]) {
+  const { createCanvas, loadImage } = await import("@napi-rs/canvas");
+  const [, x0, x1, y0, y1] = a;
+  const c = createCanvas((x1 - x0 + 1) * SHEET_PPT, (y1 - y0 + 1) * SHEET_PPT), g = c.getContext("2d");
+  for (const [x, y, b] of l) g.drawImage(await loadImage(b), (x - x0) * SHEET_PPT, (y - y0) * SHEET_PPT, SHEET_PPT, SHEET_PPT);
+  const out = Buffer.from(await c.encode("webp", 92));
+  await (useD1 ? putFile(k, out) : local ? fs.mkdir(`out/${k.replace(/\/[^/]+$/, "")}`, { recursive: true }).then(() => fs.writeFile(`out/${k}`, out)) : put(k, out));
 }
 async function pool(jobs: (() => Promise<void>)[], n = 8) {
   let i = 0;
@@ -205,6 +235,7 @@ if (doing("radar")) {
   // The newest scan, then its list at once (owner, 23 Nov: the app was 25 to 45 minutes behind, because the
   // list was only written at the end of a ~9 minute run). The older frames follow and the list is written again.
   await pool(newestJobs, 10);
+  await Promise.all(sheets);
   await publish();
   await check(times.filter((t) => t !== latest));
   for (const t of times.filter((t) => t !== latest && ok.has(t))) scanJobs(t, jobs);
@@ -280,6 +311,7 @@ if (doing("sat")) try {
   console.warn("satellite skipped:", String(e).slice(0, 200));
 }
 
+await Promise.all(sheets);
 await publish();
 console.log(`[${PART}] newest ${new Date(latest).toISOString()}: drew ${drawn}, already there ${skipped}, ${Math.round((Date.now() - started) / 1000)} s`);
 
