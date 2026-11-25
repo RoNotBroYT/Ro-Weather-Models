@@ -29,6 +29,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install
+      # Ground heights for rain / sleet / snow (25 Nov), fetched once and kept between runs.
+      - uses: actions/cache@v4
+        with:
+          path: radar/dem-cache
+          key: dem-v2
       # ecCodes reads DWD's ICON-EU files (rain / sleet / snow by wet-bulb, see lib/server/wetbulb.ts).
       - if: matrix.part == 'radar' || matrix.part == 'forecast'
         run: sudo apt-get install -y -qq libeccodes-tools > /dev/null

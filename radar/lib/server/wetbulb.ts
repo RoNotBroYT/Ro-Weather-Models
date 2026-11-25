@@ -1,8 +1,8 @@
 // Rain, sleet or snow for the radar, done properly (17 Nov): the WET-BULB temperature near the
 // ground (how cold falling rain or snow ends up: air temperature and humidity together), from
 // DWD's ICON-EU model (free open data, ~7 km, hourly), corrected for the real height of the ground
-// (a free 2 km height map over Great Britain and Ireland: snow sits on the fells, the valleys get
-// rain), then nudged towards what the airports report right now (METAR, every 30 min: their own
+// (free height maps, ~350 m over Great Britain and Ireland, ~1.5 km for Europe: snow sits on the fells,
+// the valleys get rain), and against the model's own snow line, then nudged towards what the airports report right now (METAR, every 30 min: their own
 // temperature and dew point, and whether they see snow, sleet or rain).
 //   wet-bulb ≤ 0.5 °C → snow;  ≤ 1.5 °C → sleet (mix);  above → rain.
 // Needs ecCodes' grib_get_data (installed by the GitHub job). Anything missing → null, and the
@@ -17,6 +17,7 @@ const LAT0 = 29.5, LON0 = -23.5, D = 0.0625, NY = 657, NX = 1377;   // ICON-EU's
 export interface WetBulbField {
   tw: Float32Array;          // model wet-bulb at the model's own ground height, °C
   hs: Float32Array;          // the model's ground height, m
+  sl?: Float32Array;         // ICON-EU's snowfall limit, m above sea level (25 Nov)
   fix: { lat: number; lon: number; d: number; snow?: boolean; rain?: boolean }[];   // airport corrections
 }
 
@@ -54,36 +55,60 @@ export function wetBulb(t: number, td: number): number {
     + 0.00391838 * rh ** 1.5 * Math.atan(0.023101 * rh) - 4.686035;
 }
 
-// --- The ground: AWS's free Terrarium height tiles at zoom 6 (~2.4 km), GB and Ireland.
-let dem: { z: number; x0: number; y0: number; nx: number; ny: number; h: Float32Array } | null = null;
+// --- The ground (25 Nov: was one 2.4 km map of GB+Ireland read square by square, so snow came out in blocks).
+// AWS's free Terrarium heights, read smoothly (blended between points): Great Britain and Ireland at zoom 8
+// (~350 m), the rest of Europe at zoom 6 (~1.5 km). Kept on disk between runs (the GitHub job caches the folder).
+type Dem = { z: number; x0: number; y0: number; nx: number; ny: number; h: Float32Array };
+const dems: Dem[] = [];
 let demLoading: Promise<void> | null = null;
-async function loadDem() {
-  const z = 6, x0 = 29, x1 = 32, y0 = 18, y1 = 22, nx = (x1 - x0 + 1) * 256, ny = (y1 - y0 + 1) * 256;
+const DEM_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), "../../dem-cache");
+const tileX = (lon: number, z: number) => Math.floor(((lon + 180) / 360) * 2 ** z);
+const tileY = (lat: number, z: number) => { const r = (lat * Math.PI) / 180; return Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * 2 ** z); };
+async function loadArea(name: string, z: number, w: number, e: number, s: number, n: number): Promise<Dem> {
+  const x0 = tileX(w, z), x1 = tileX(e, z), y0 = tileY(n, z), y1 = tileY(s, z);
+  const nx = (x1 - x0 + 1) * 256, ny = (y1 - y0 + 1) * 256, file = path.join(DEM_DIR, `${name}-z${z}.bin`);
+  const saved = await fs.readFile(file).catch(() => null);
+  if (saved && saved.byteLength === nx * ny * 4) return { z, x0, y0, nx, ny, h: new Float32Array(saved.buffer, saved.byteOffset, nx * ny) };
   const h = new Float32Array(nx * ny).fill(NaN);
-  await Promise.all(Array.from({ length: (x1 - x0 + 1) * (y1 - y0 + 1) }, async (_, i) => {
-    const tx = x0 + (i % (x1 - x0 + 1)), ty = y0 + Math.floor(i / (x1 - x0 + 1));
-    const r = await fetch(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${tx}/${ty}.png`, { signal: AbortSignal.timeout(30_000) }).catch(() => null);
-    if (!r?.ok) return;
-    const img = await loadImage(Buffer.from(await r.arrayBuffer()));
-    const c = createCanvas(256, 256), cx = c.getContext("2d");
-    cx.drawImage(img, 0, 0);
-    const data = cx.getImageData(0, 0, 256, 256).data;
-    for (let py = 0; py < 256; py++) for (let px = 0; px < 256; px++) {
-      const o = (py * 256 + px) * 4;
-      h[((ty - y0) * 256 + py) * nx + (tx - x0) * 256 + px] = data[o] * 256 + data[o + 1] + data[o + 2] / 256 - 32768;
+  const tiles = Array.from({ length: (x1 - x0 + 1) * (y1 - y0 + 1) }, (_, i) => [x0 + (i % (x1 - x0 + 1)), y0 + Math.floor(i / (x1 - x0 + 1))]);
+  let next = 0;
+  await Promise.all(Array.from({ length: 16 }, async () => {
+    while (next < tiles.length) {
+      const [tx, ty] = tiles[next++];
+      const r = await fetch(`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${tx}/${ty}.png`, { signal: AbortSignal.timeout(30_000) }).catch(() => null);
+      if (!r?.ok) continue;
+      const img = await loadImage(Buffer.from(await r.arrayBuffer()));
+      const c = createCanvas(256, 256), cx = c.getContext("2d");
+      cx.drawImage(img, 0, 0);
+      const data = cx.getImageData(0, 0, 256, 256).data;
+      for (let py = 0; py < 256; py++) for (let px = 0; px < 256; px++) {
+        const o = (py * 256 + px) * 4, v = data[o] * 256 + data[o + 1] + data[o + 2] / 256 - 32768;
+        h[((ty - y0) * 256 + py) * nx + (tx - x0) * 256 + px] = v < 0 ? 0 : v;   // sea and below: 0
+      }
     }
   }));
-  dem = { z, x0, y0, nx, ny, h };
+  await fs.mkdir(DEM_DIR, { recursive: true }).catch(() => {});
+  await fs.writeFile(file, Buffer.from(h.buffer)).catch(() => {});
+  return { z, x0, y0, nx, ny, h };
+}
+async function loadDem() {
+  const t0 = Date.now();
+  dems.push(await loadArea("gbie", 8, -11, 2, 49.5, 61));
+  dems.push(await loadArea("europe", 6, -25, 45, 34, 72));
+  console.log(`[wetbulb] ground heights ready in ${Math.round((Date.now() - t0) / 1000)} s`);
 }
 function groundAt(lat: number, lon: number): number {
-  if (!dem) return NaN;
-  const n = 2 ** dem.z * 256;
-  const px = ((lon + 180) / 360) * n - dem.x0 * 256;
-  const r = (lat * Math.PI) / 180, py = ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * n - dem.y0 * 256;
-  const ix = Math.round(px), iy = Math.round(py);
-  if (ix < 0 || iy < 0 || ix >= dem.nx || iy >= dem.ny) return NaN;
-  const v = dem.h[iy * dem.nx + ix];
-  return v < -50 ? 0 : v;   // sea
+  for (const d of dems) {
+    const n = 2 ** d.z * 256, r = (lat * Math.PI) / 180;
+    const px = ((lon + 180) / 360) * n - d.x0 * 256 - 0.5;
+    const py = ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * n - d.y0 * 256 - 0.5;
+    const ix = Math.floor(px), iy = Math.floor(py);
+    if (ix < 0 || iy < 0 || ix >= d.nx - 1 || iy >= d.ny - 1) continue;
+    const tx = px - ix, ty = py - iy, v = (j: number, i: number) => d.h[(iy + j) * d.nx + ix + i];
+    const g = (v(0, 0) * (1 - tx) + v(0, 1) * tx) * (1 - ty) + (v(1, 0) * (1 - tx) + v(1, 1) * tx) * ty;
+    if (Number.isFinite(g)) return g;
+  }
+  return NaN;
 }
 
 function sample(a: Float32Array, lat: number, lon: number): number {
@@ -100,7 +125,14 @@ function rawTw(f: WetBulbField, lat: number, lon: number): number {
   const tw = sample(f.tw, lat, lon);
   if (!Number.isFinite(tw)) return NaN;
   const g = groundAt(lat, lon), hs = sample(f.hs, lat, lon);
-  return Number.isFinite(g) && Number.isFinite(hs) ? tw - LAPSE * (g - hs) : tw;
+  const own = Number.isFinite(g) && Number.isFinite(hs) ? tw - LAPSE * (g - hs) : tw;
+  // 25 Nov: the model's own snow line against the real ground. ICON-EU puts its snowfall limit where the
+  // wet-bulb is about 1.3 °C; ground above it is that much colder, below it warmer. Averaged with the
+  // wet-bulb above, so either one going odd can't flip a whole area.
+  const sl = f.sl ? sample(f.sl, lat, lon) : NaN;
+  if (!Number.isFinite(g) || !Number.isFinite(sl) || !Number.isFinite(hs) || sl < hs - 100 || sl > 6000) return own;
+  const line = 1.3 - LAPSE * (g - sl);
+  return 0.5 * own + 0.5 * line;
 }
 
 /** Wet-bulb here, height-corrected and nudged by nearby airports (within ~40 km, fading out). */
@@ -146,10 +178,11 @@ async function load(hour: number): Promise<WetBulbField | null> {
     const hs = await grib(`https://opendata.dwd.de/weather/nwp/icon-eu/grib/${rh}/hsurf/icon-eu_europe_regular-lat-lon_time-invariant_${st}_HSURF.grib2.bz2`);
     const tw = new Float32Array(NY * NX);
     for (let i = 0; i < tw.length; i++) tw[i] = wetBulb(t2[i] - 273.15, td[i] - 273.15);
-    const f: WetBulbField = { tw, hs: hs ?? new Float32Array(NY * NX).fill(NaN), fix: [] };
+    const sl = await grib(u("snowlmt", "SNOWLMT"));
+    const f: WetBulbField = { tw, hs: hs ?? new Float32Array(NY * NX).fill(NaN), sl: sl ?? undefined, fix: [] };
     await demLoading;
     f.fix = await airports(f, t);
-    console.log(`[wetbulb] ICON-EU ${st}+${ss} for ${new Date(t).toISOString()}, ${f.fix.length} airports`);
+    console.log(`[wetbulb] ICON-EU ${st}+${ss} for ${new Date(t).toISOString()}, ${f.fix.length} airports, snow line ${sl ? "yes" : "no"}`);
     return f;
   }
   return null;

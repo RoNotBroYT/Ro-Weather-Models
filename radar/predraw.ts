@@ -105,7 +105,7 @@ async function job(key: string, draw: () => Promise<{ buf: Buffer; final: boolea
 const SHEET_PPT = 256;
 // Owner, 24 Nov: people start zoomed in on the UK, so the whole of Great Britain and Ireland at zoom 7 (the radar's own
 // ~1 km detail) is one picture too - past frames only (the forecast isn't drawn that close).
-const sheetArea = new Map<number, readonly [number, number, number, number, number]>([...AREA.filter(([z]) => z === 2 || z === 4 || z === 6), [7, 59, 66, 38, 44] as const].map((a) => [a[0], a]));
+const sheetArea = new Map<number, readonly [number, number, number, number, number]>([...AREA.filter(([z]) => z === 2 || z === 4 || z === 5 || z === 6), [7, 59, 66, 38, 44] as const].map((a) => [a[0], a]));
 const sheetBufs = new Map<string, [number, number, Buffer][]>();
 const SQ = /^((?:tile|nowcast\/\d+)\/\d+)\/(\d+)\/(\d+)\/(\d+)@2x\.webp$/;
 function sheetKeep(key: string, buf: Buffer) {
