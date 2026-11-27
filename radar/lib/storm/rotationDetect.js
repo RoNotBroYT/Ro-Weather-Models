@@ -126,12 +126,12 @@ function rampRgb(stops, dbz) {
   }
   return stops[0][1];
 }
-// Every colour of the three scales at whole dBZ steps, 5 to 70. Snow white
-// (50+) and rain white (65+) are the same colour; rain wins below its own
-// white, so pure white reads as 65 only when no snow colour is nearer.
+// Every colour of the three scales in quarter-dBZ steps, 5 to 70. Snow white
+// (50+) and rain white (65+) are the same colour: snow comes first and wins
+// (very heavy snow is likelier than 65 dBZ rain).
 const PALETTE = [];
-for (const stops of [RAIN_STOPS, SNOW_STOPS, MIX_STOPS])
-  for (let d = 5; d <= (stops === RAIN_STOPS ? 70 : stops[stops.length - 1][0]); d++) PALETTE.push([rampRgb(stops, d), d]);
+for (const stops of [SNOW_STOPS, MIX_STOPS, RAIN_STOPS])
+  for (let d = 5; d <= (stops === RAIN_STOPS ? 70 : stops[stops.length - 1][0]); d += 0.25) PALETTE.push([rampRgb(stops, d), Math.round(d)]);
 const EXACT = new Map();
 for (const [c, d] of PALETTE) { const k = (c[0] << 16) | (c[1] << 8) | c[2]; if (!EXACT.has(k)) EXACT.set(k, d); }
 const NEAREST = new Map();
