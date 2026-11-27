@@ -17,7 +17,8 @@ const LAT0 = 29.5, LON0 = -23.5, D = 0.0625, NY = 657, NX = 1377;   // ICON-EU's
 export interface WetBulbField {
   tw: Float32Array;          // model wet-bulb at the model's own ground height, °C
   hs: Float32Array;          // the model's ground height, m
-  sl?: Float32Array;         // ICON-EU's snowfall limit, m above sea level (25 Nov)
+  sl?: Float32Array;         // ICON-EU's snowfall limit, m above sea level (25 Nov), smoothed (27 Nov)
+  slw?: Float32Array;        // how much of the area around has a snow line at all, 0..1 (27 Nov)
   fix: { lat: number; lon: number; d: number; snow?: boolean; rain?: boolean }[];   // airport corrections
 }
 
@@ -112,11 +113,53 @@ function groundAt(lat: number, lon: number): number {
 }
 
 function sample(a: Float32Array, lat: number, lon: number): number {
+  // 27 Nov (owner: blocky snow edges): bilinear over the corners that have a value, so one missing corner
+  // no longer drops a whole ~7 km cell to another rule (that drew stair-steps along the grid).
   const fy = (lat - LAT0) / D, fx = (lon - LON0) / D;
   const y = Math.floor(fy), x = Math.floor(fx), ty = fy - y, tx = fx - x;
   if (y < 0 || x < 0 || y >= NY - 1 || x >= NX - 1) return NaN;
-  const v = (j: number, i: number) => a[(y + j) * NX + x + i];
-  return (v(0, 0) * (1 - tx) + v(0, 1) * tx) * (1 - ty) + (v(1, 0) * (1 - tx) + v(1, 1) * tx) * ty;
+  let s = 0, w = 0;
+  for (const [j, i, k] of [[0, 0, (1 - tx) * (1 - ty)], [0, 1, tx * (1 - ty)], [1, 0, (1 - tx) * ty], [1, 1, tx * ty]] as const) {
+    const v = a[(y + j) * NX + x + i];
+    if (Number.isFinite(v)) { s += v * k; w += k; }
+  }
+  return w > 0.05 ? s / w : NaN;
+}
+
+const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+
+/**
+ * 27 Nov (owner: blocky snow edges): ICON-EU leaves its snow line out over whole areas, and it jumps from cell to
+ * cell. Averaged over the cells around that have one (box blur, twice, r cells each way), with how many had one
+ * as a 0..1 weight, so the snow line fades in and out over ~30 km instead of switching along a grid edge.
+ */
+function smoothMissing(a: Float32Array, r: number): { v: Float32Array; w: Float32Array } {
+  let v = new Float32Array(NY * NX), w = new Float32Array(NY * NX);
+  for (let i = 0; i < a.length; i++) if (Number.isFinite(a[i])) { v[i] = a[i]; w[i] = 1; }
+  const blur = (src: Float32Array) => {
+    const tmp = new Float32Array(src.length), out = new Float32Array(src.length);
+    for (let y = 0; y < NY; y++) {
+      let s = 0; const row = y * NX;
+      for (let x = -r; x < NX + r; x++) {
+        if (x + r < NX && x + r >= 0) s += src[row + x + r];
+        if (x - r - 1 >= 0 && x - r - 1 < NX) s -= src[row + x - r - 1];
+        if (x >= 0 && x < NX) tmp[row + x] = s;
+      }
+    }
+    for (let x = 0; x < NX; x++) {
+      let s = 0;
+      for (let y = -r; y < NY + r; y++) {
+        if (y + r < NY && y + r >= 0) s += tmp[(y + r) * NX + x];
+        if (y - r - 1 >= 0 && y - r - 1 < NY) s -= tmp[(y - r - 1) * NX + x];
+        if (y >= 0 && y < NY) out[y * NX + x] = s;
+      }
+    }
+    return out;
+  };
+  for (let k = 0; k < 2; k++) { v = blur(v); w = blur(w); }
+  const n = (2 * r + 1) ** 4, val = new Float32Array(NY * NX), wt = new Float32Array(NY * NX);
+  for (let i = 0; i < val.length; i++) { wt[i] = w[i] / n; val[i] = w[i] > 1e-3 ? v[i] / w[i] : NaN; }
+  return { v: val, w: wt };
 }
 
 /** Wet-bulb lapse with height: ~5 °C per km (between the dry and moist rates). */
@@ -130,9 +173,12 @@ function rawTw(f: WetBulbField, lat: number, lon: number): number {
   // wet-bulb is about 1.3 °C; ground above it is that much colder, below it warmer. Averaged with the
   // wet-bulb above, so either one going odd can't flip a whole area.
   const sl = f.sl ? sample(f.sl, lat, lon) : NaN;
-  if (!Number.isFinite(g) || !Number.isFinite(sl) || !Number.isFinite(hs) || sl < hs - 100 || sl > 6000) return own;
+  if (!Number.isFinite(g) || !Number.isFinite(sl) || !Number.isFinite(hs)) return own;
+  // Faded in and out (not switched) where the snow line is near the ground or very high.
+  const cover = f.slw ? clamp01(sample(f.slw, lat, lon) * 1.5) : 1;
+  const k = 0.5 * cover * clamp01((sl - (hs - 100)) / 150) * clamp01((6000 - sl) / 800);
   const line = 1.3 - LAPSE * (g - sl);
-  return 0.5 * own + 0.5 * line;
+  return (1 - k) * own + k * line;
 }
 
 /** Wet-bulb here, height-corrected and nudged by nearby airports (within ~40 km, fading out). */
@@ -151,12 +197,14 @@ export function wetBulbAt(f: WetBulbField, lat: number, lon: number): number {
   }
   if (wsum > 0) tw += (dsum / wsum) * Math.min(1, wsum);
   // An airport seeing snow keeps it snow close by; seeing rain keeps it rain.
-  if (snow > 0.3) tw = Math.min(tw, 0.4);
-  else if (rain > 0.15 && tw < 1.6) {
-    // Rain at the airports: rain in the towns around them too. High ground (over 250 m) keeps its own value,
-    // so sleet or wet snow can still show on the hills.
+  // Faded by how close the airports are (27 Nov: was on/off, which drew hard edges).
+  if (snow > 0.1) tw -= Math.max(0, tw - 0.4) * clamp01((snow - 0.1) / 0.3);
+  else if (rain > 0.05 && tw < 1.6) {
+    // Rain at the airports: rain in the towns around them too. High ground (fading out from 200 to 320 m) keeps
+    // its own value, so sleet or wet snow can still show on the hills.
     const g = groundAt(lat, lon);
-    if (!(g > 250)) tw = Math.max(tw, 1.6);
+    const low = Number.isFinite(g) ? clamp01((320 - g) / 120) : 1;
+    tw += (1.6 - tw) * clamp01((rain - 0.05) / 0.2) * low;
   }
   return tw;
 }
@@ -178,8 +226,10 @@ async function load(hour: number): Promise<WetBulbField | null> {
     const hs = await grib(`https://opendata.dwd.de/weather/nwp/icon-eu/grib/${rh}/hsurf/icon-eu_europe_regular-lat-lon_time-invariant_${st}_HSURF.grib2.bz2`);
     const tw = new Float32Array(NY * NX);
     for (let i = 0; i < tw.length; i++) tw[i] = wetBulb(t2[i] - 273.15, td[i] - 273.15);
-    const sl = await grib(u("snowlmt", "SNOWLMT"));
-    const f: WetBulbField = { tw, hs: hs ?? new Float32Array(NY * NX).fill(NaN), sl: sl ?? undefined, fix: [] };
+    const slRaw = await grib(u("snowlmt", "SNOWLMT"));
+    const sm = slRaw ? smoothMissing(slRaw, 4) : null;
+    const f: WetBulbField = { tw, hs: hs ?? new Float32Array(NY * NX).fill(NaN), sl: sm?.v, slw: sm?.w, fix: [] };
+    const sl = slRaw;
     await demLoading;
     f.fix = await airports(f, t);
     console.log(`[wetbulb] ICON-EU ${st}+${ss} for ${new Date(t).toISOString()}, ${f.fix.length} airports, snow line ${sl ? "yes" : "no"}`);
