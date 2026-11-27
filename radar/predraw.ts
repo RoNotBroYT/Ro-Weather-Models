@@ -18,6 +18,7 @@ import { wetBulbNow, wetBulbSettled } from "./lib/server/wetbulb";
 import { historyTimes, latestOperaTime, opera, renderTile, renderData } from "./lib/server/radar24";
 import { renderNowcastTile, NOWCAST_MAX_LEAD_MIN } from "./lib/server/radarNowcast";
 import { buildClutter } from "./clutter";
+import { scanCells } from "./cells";
 import { liveLightning, saveLightning } from "./lightning";
 import { eumetsatSkipped, renderView, useMtgMosaics, VIEW_SATS, type ViewSat } from "./lib/server/satView";
 
@@ -237,6 +238,7 @@ if (doing("radar")) {
   await pool(newestJobs, 10);
   await Promise.all(sheets);
   await publish();
+  await saveCells(latest).catch((e) => console.warn("cells", String(e).slice(0, 200)));
   await check(times.filter((t) => t !== latest));
   for (const t of times.filter((t) => t !== latest && ok.has(t))) scanJobs(t, jobs);
   // Once a day: rebuild the clutter list from the past day's frames (before drawing,
@@ -315,6 +317,26 @@ await Promise.all(sheets);
 await publish();
 console.log(`[${PART}] newest ${new Date(latest).toISOString()}: drew ${drawn}, already there ${skipped}, ${Math.round((Date.now() - started) / 1000)} s`);
 
+
+/**
+ * Storm cells for the newest frame (cells.ts): one scan for everyone. Two saves a frame (cells/<t>.json and
+ * cells/latest.json), whole files in D1 like lightning; skipped when latest.json already has this frame.
+ */
+async function saveCells(t: number) {
+  const prev = local
+    ? await fs.readFile("out/cells/latest.json", "utf8").then(JSON.parse).catch(() => null)
+    : await fetch(`https://radar.ro-weather.app/cells/latest.json?r=${t}`, { signal: AbortSignal.timeout(15_000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  if (prev?.time >= t) return;
+  const s0 = Date.now();
+  const body = await scanCells(t, prev);
+  if (!body) return;
+  for (const Key of [`cells/${t}.json`, "cells/latest.json"]) {
+    if (local) { await fs.mkdir("out/cells", { recursive: true }); await fs.writeFile(`out/${Key}`, body); }
+    else if (useD1) await putFile(Key, body);
+    else await s3.send(new PutObjectCommand({ Bucket, Key, Body: body, ContentType: "application/json", CacheControl: Key.endsWith("latest.json") ? "public, max-age=30" : "public, max-age=86400" }));
+  }
+  console.log(`[cells] ${new Date(t).toISOString()}: ${JSON.parse(body).cells.length} cells, ${Math.round((Date.now() - s0) / 1000)} s`);
+}
 
 /**
  * TEST ONLY, changes nothing (owner, 23 Nov: Dublin's false "storms" fed the rain forecast). For the newest scan:
